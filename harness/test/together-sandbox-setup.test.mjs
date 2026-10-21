@@ -39,6 +39,7 @@ async function fixture(t, example = "copy-message") {
     processTarget: new EventEmitter(),
     assertRuntimeDependencies() {},
     checkAgentReadiness: async () => ({ ok: true, checks: [] }),
+    ensureHostGuardianRuntime: async () => ({}),
     loadTogetherSetupBackend: async () => ({
       exists: async () => {
         calls.push("exists");
@@ -176,7 +177,7 @@ test("Together API setup builds a network snapshot and configures a longer Guard
   assert.equal(f.calls[1][1], "hurdle-claude-code-network@v1");
   const config = JSON.parse(await readFile(f.runtimePath, "utf8"));
   assert.equal(config.environment.settings.maxLifetimeMs, 600000);
-  assert.match(f.output(), /separate Guardian VM/);
+  assert.match(f.output(), /All sandbox traffic routes through this machine/);
 });
 test("Together setup gives a later API Suite ten minutes but keeps a configured limit", async (t) => {
   const f = await fixture(t);

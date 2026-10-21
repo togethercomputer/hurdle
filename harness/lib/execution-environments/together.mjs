@@ -171,7 +171,6 @@ export function createTogetherExecutionEnvironment({
           const captureRequired = envelope.capture.mode !== "none";
           const egressCollections = [noEgress(captureRequired ? "capture-failed" : "unsupported-platform")];
           const resources = [];
-          let captureResource;
           let guardianSession;
           const workloadCredentials = Object.fromEntries(envelope.credentialBindings.map(({ environmentName, delivery }) => [
             environmentName, delivery.kind === "captured-http-header"
@@ -204,36 +203,23 @@ export function createTogetherExecutionEnvironment({
             );
           try {
             active(envelope.signal);
-            const allocatedAt = Date.now();
-            if (captureRequired) {
-              reportStatus("starting-guardian");
-              captureResource = await provider.acquire({
-                ...settings, cpuCount: 1, memoryMiB: 2048, role: "capture", apiKey,
-                signal: envelope.signal,
-              });
-              resources.push(captureResource);
-              reportExecutionProgress(progress, {
-                kind: "environment-resource-allocated", executionId: envelope.executionId,
-                environmentId: "together", resource: {
-                  provider: "together", role: "guardian", id: captureResource.sandboxId,
-                },
-              });
-              active(envelope.signal);
-              phase = "setup";
-              guardianSession = await guardian.prepare({
-                sandbox: captureResource, capture: envelope.capture,
-                credentialBindings: envelope.credentialBindings, credentialValues,
-                surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
-                signal: envelope.signal,
-              });
-              active(envelope.signal);
-              reportStatus("guardian-started");
-              phase = "acquire";
-            }
+            // All workload egress crosses the controller-host Guardian, so it
+            // runs for every task; capture policy applies to capture hosts only.
+            reportStatus("starting-guardian");
+            phase = "setup";
+            guardianSession = await guardian.prepare({
+              capture: envelope.capture,
+              credentialBindings: envelope.credentialBindings, credentialValues,
+              surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
+              signal: envelope.signal,
+            });
+            active(envelope.signal);
+            reportStatus("guardian-started");
+            phase = "acquire";
             reportStatus("starting-sandbox");
+            const allocatedAt = Date.now();
             resource = await provider.acquire({
               ...settings,
-              captureBridge: captureRequired,
               apiKey,
               signal: envelope.signal,
             });
@@ -256,11 +242,9 @@ export function createTogetherExecutionEnvironment({
               ...settings,
               signal: envelope.signal,
             });
-            if (captureRequired) {
-              await guardian.attach({ workload: resource, sandbox: captureResource,
-                session: guardianSession, signal: envelope.signal });
-              active(envelope.signal);
-            }
+            await guardian.attach({ workload: resource,
+              session: guardianSession, signal: envelope.signal });
+            active(envelope.signal);
             try {
               await executeAgent(envelope, async (program) => {
                 try {
@@ -326,16 +310,14 @@ export function createTogetherExecutionEnvironment({
                   });
                   active(envelope.signal);
                   reportStatus("collecting-results");
-                  if (captureRequired) {
-                    phase = "seal";
-                    try {
-                      egressCollections[0] = await guardian.seal({
-                        sandbox: captureResource, session: guardianSession,
-                      });
-                    } catch {
+                  phase = "seal";
+                  try {
+                    egressCollections[0] = await guardian.seal({ session: guardianSession });
+                  } catch {
+                    // Without capture hosts the journal is diagnostic only.
+                    if (captureRequired)
                       integrityIssues.push(issue("environment.egress-seal-failed", "seal",
-                        "External Together egress evidence could not be sealed."));
-                    }
+                        "Together egress evidence could not be sealed."));
                   }
                   if (!process.quiescent)
                     integrityIssues.push(

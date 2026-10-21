@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { parseProjectEnvironment } from "./project-environment.mjs";
 import { managedImageAgents, managedImageName, SETUP_AGENT_PACKAGES } from "./managed-images.mjs";
 import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
+import { ensureHostGuardianRuntime } from "./host-guardian-runtime.mjs";
 import {
   resolveRuntimeProfile,
   describeRuntimeJudgeCapability,
@@ -250,6 +251,7 @@ export async function setupTogetherSandbox(
       requiredCredentials: taskCredentials,
       judgeCredentialName: judgeRequired ? profile.judge.credentialEnv : null,
       allowResultStoreSetup: true,
+      allowHostGuardianSetup: true,
       suite,
       cwd: io.cwd,
     });
@@ -260,6 +262,19 @@ export async function setupTogetherSandbox(
         "setup.not-ready",
         "Resolve the setup errors above and rerun setup --sandbox together. No snapshot build or evaluation started.",
       );
+    // Every Together workload sends its egress through this machine.
+    io.stdout.write(terminalNote("Installing the egress Guardian on this machine…", io.stdout));
+    try {
+      await (dependencies.ensureHostGuardianRuntime ?? ensureHostGuardianRuntime)();
+    } catch (error) {
+      throw setupError(
+        "setup.host-guardian",
+        error.code === "environment.host-guardian-platform"
+          ? `${error.message} Use --sandbox e2b instead.`
+          : "The egress Guardian could not be installed on this machine. Check network access to github.com and pypi.org, then rerun setup --sandbox together.",
+      );
+    }
+    output.check("pass", "Egress Guardian installed on this machine.");
     const backend = await (
       dependencies.loadTogetherSetupBackend ?? loadTogetherSetupBackend
     )();
@@ -318,9 +333,9 @@ export async function setupTogetherSandbox(
     const needsStorageSetup = readiness.checks.some(check => check.code === "runtime.postgres-setup-required");
     const nextCommands = [...(needsStorageSetup ? [`${suiteCommand("setup", suite, { cwd: io.cwd })} --store postgres`] : []), suiteCommand("run", suite, { view: true, cwd: io.cwd })];
     output.check("pass", needsStorageSetup ? "Together sandbox configured." : "Setup complete · Together sandbox configured.");
-    if (needsCapture) {
-      io.stdout.write(terminalNote("API capture uses a separate Guardian VM with protected credentials and sealed request evidence.", io.stdout));
-    }
+    io.stdout.write(terminalNote(needsCapture
+      ? "All sandbox traffic routes through this machine, which protects credentials and seals request evidence. Keep it online during runs."
+      : "All sandbox traffic routes through this machine. Keep it online during runs.", io.stdout));
     io.stdout.write(
       "\n" +
         runtimeSummaryRows(profile, io.cwd).map(([label, value]) => fact(label, value)).join("") +

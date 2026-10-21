@@ -4,10 +4,8 @@ import {
 } from "../controller-transcript.mjs";
 import { createLinuxSandboxOperations } from "./linux-sandbox-operations.mjs";
 import {
-  TOGETHER_GUARDIAN_PORT,
   TOGETHER_WORKLOAD_BRIDGE_PORT,
   togetherApplicationHost,
-  restrictTogetherGuardianNetwork,
 } from "./together-guardian.mjs";
 
 function timeoutError() {
@@ -226,7 +224,8 @@ PY`, { user: "root", timeoutMs: 10_000 });
     sandboxId: sandbox.id,
     commands,
     getHost: (port) => togetherApplicationHost(sandbox.vmInfo.agent.url, port),
-    updateNetwork: (policy, options) => restrictTogetherGuardianNetwork(resource, policy, options),
+    // Admits the controller relay through the bridge port's inbound allowlist.
+    get agentToken() { return sandbox.vmInfo?.agent?.token ?? null; },
     files: {
       getInfo: (path) => bounded(sandbox.files.stat(path)),
       async write(pathOrWrites, data, options = {}) {
@@ -285,11 +284,8 @@ export function createTogetherProvider({
       memoryMiB,
       maxLifetimeMs,
       apiKey,
-      role = "execution",
-      captureBridge = false,
       signal,
     }) {
-      if (!["execution", "capture"].includes(role)) throw new TypeError("invalid Together resource role");
       requireActive(signal);
       const { TogetherSandbox, createApiClient, createSandboxClient } = await loadSdk();
       const sdk = new TogetherSandbox({
@@ -309,10 +305,13 @@ export function createTogetherProvider({
         cpu: cpuCount,
         memory_bytes: memoryMiB * 1024 * 1024,
         ttl: Math.ceil(maxLifetimeMs / 1000),
-        tags: { "hurdle-role": role },
-        experimental: { network_policy: { inbound_allowlist: role === "capture"
-          ? [{ ports: [String(TOGETHER_GUARDIAN_PORT)], requires_token: false }]
-          : captureBridge ? [{ ports: [String(TOGETHER_WORKLOAD_BRIDGE_PORT)], requires_token: false }] : [] } },
+        tags: { "hurdle-role": "execution" },
+        // Only the controller relay may reach the bridge port; the sandbox
+        // token is checked by Together ingress before the per-cell token.
+        // TODO(egress): add a deny-all outbound rule once Together supports it.
+        experimental: { network_policy: { inbound_allowlist: [
+          { ports: [String(TOGETHER_WORKLOAD_BRIDGE_PORT)], requires_token: true },
+        ] } },
       } });
       if (response.error !== undefined || typeof response.data?.id !== "string" || !response.data.id) {
         throw new Error("Together sandbox allocation failed");

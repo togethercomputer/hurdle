@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkE2bCredential, checkPostgresCredential, checkTogetherSandboxCredential } from "./credential-preflight.mjs";
+import { findHostGuardianRuntime } from "./host-guardian-runtime.mjs";
 import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
 import { managedImageAgents, managedImageName } from "./managed-images.mjs";
 import { listLocalCodexModels } from "./model-discovery.mjs";
@@ -92,11 +93,13 @@ export async function checkAgentReadiness({
   agentSelections, runtimeProfile, runtimeEnv, requiredCredentials = [],
   judgeCredentialName = null,
   allowResultStoreSetup = false,
+  allowHostGuardianSetup = false,
   suite = "evals/example.suite.mjs", cwd,
 }, {
   fetch = globalThis.fetch, probeCli = probeAgentCli,
   checkE2b = checkE2bCredential, checkPostgres = checkPostgresCredential,
   checkTogetherSandbox = checkTogetherSandboxCredential,
+  findHostGuardian = findHostGuardianRuntime,
   listCodexModels = listLocalCodexModels,
 } = {}) {
   const checks = [];
@@ -172,6 +175,12 @@ export async function checkAgentReadiness({
   if (runtimeProfile.environment.kind === "together") {
     const checked = await checkTogetherSandbox(runtimeEnv[runtimeProfile.environment.apiKeyEnv]);
     checks.push(result(checked.status === "pass" ? "pass" : "fail", "runtime.together", `Together sandbox: ${checked.message}.`));
+    // Setup installs the Guardian after readiness passes.
+    if (!allowHostGuardianSetup) {
+      checks.push(findHostGuardian()
+        ? result("pass", "runtime.host-guardian", "Egress Guardian installed on this machine.")
+        : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })} --sandbox together.`));
+    }
   }
   if (runtimeProfile.resultStore.kind === "postgres") {
     const checked = await checkPostgres(runtimeEnv[runtimeProfile.resultStore.databaseUrlEnv]);

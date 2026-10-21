@@ -2,13 +2,19 @@ import { createRequire } from "node:module";
 
 const MAX_FRAME_BYTES = 1024 * 1024;
 const MAX_BUFFER_BYTES = 2 * MAX_FRAME_BYTES;
+const GRACEFUL_CLOSE_TIMEOUT_MS = 30_000;
+const MAX_ACTIVE_FLOWS = 512;
 
-// No payload logging or persistence: the controller only moves opaque frames.
-// Evidence and real credentials stay in the separate Guardian VM.
-export async function startTogetherControllerRelay({ workloadUrl, guardianUrl, cellToken, signal }) {
+// No payload logging or persistence: the controller only moves opaque bytes
+// between the workload's reverse bridge and the controller-host Guardian.
+export async function startTogetherControllerRelay({
+  workloadUrl, cellToken, sandboxToken = null, openUpstream, signal,
+}) {
   const WebSocket = createRequire(import.meta.url)("ws");
+  if (typeof openUpstream !== "function") throw new TypeError("Together relay requires an upstream");
   if (signal?.aborted) throw Object.assign(new Error("Together relay cancelled"), { name: "AbortError" });
   const sockets = new Set();
+  const upstreams = new Set();
   const ids = new Set();
   let failure = null, stopping = false, expectedShutdown = false;
   // Keep preview routes alive while the Agent is thinking or using tools.
@@ -16,8 +22,14 @@ export async function startTogetherControllerRelay({ workloadUrl, guardianUrl, c
   const heartbeat = setInterval(() => {
     for (const ws of sockets) if (ws.readyState === WebSocket.OPEN) ws.ping();
   }, 20000).unref();
-  const options = { headers: { "x-together-egress-cell-token": cellToken },
-    handshakeTimeout: 10000, perMessageDeflate: false, maxPayload: MAX_FRAME_BYTES };
+  const options = {
+    headers: {
+      "x-together-egress-cell-token": cellToken,
+      // Required by the port's inbound allowlist; stripped by Together ingress.
+      ...(sandboxToken ? { "X-Sandbox-Token": sandboxToken } : {}),
+    },
+    handshakeTimeout: 10000, perMessageDeflate: false, maxPayload: MAX_FRAME_BYTES,
+  };
   const fail = (reason = "transport-closed") => {
     if (!expectedShutdown && !stopping) failure ||= new Error(`Together controller relay lost its authenticated transport (${typeof reason === "string" ? reason : "transport-error"})`);
     close();
@@ -34,73 +46,98 @@ export async function startTogetherControllerRelay({ workloadUrl, guardianUrl, c
     clearInterval(heartbeat);
     signal?.removeEventListener("abort", fail);
     for (const ws of sockets) ws.terminate();
+    for (const tcp of upstreams) tcp.destroy();
     sockets.clear();
+    upstreams.clear();
   }
   function connectFlow(id) {
-    // Register both directions immediately, before either handshake completes.
-    const left = socket(guardianUrl), right = socket(`${workloadUrl}/relay/${id}`);
-    let finished = false;
-    let timer;
+    // Claim the workload flow before the upstream connects; bytes the Agent
+    // already sent are buffered by bounded WebSocket backpressure below.
+    const ws = socket(`${workloadUrl}/relay/${id}`);
+    let tcp;
+    try { tcp = openUpstream(); } catch { ws.terminate(); ids.delete(id); return; }
+    upstreams.add(tcp);
+    let finished = false, timer = null, wsOpen = false, tcpPaused = false, wsPaused = false;
+    let tcpConnected = false;
+    tcp.once("connect", () => { tcpConnected = true; });
+    const pending = [];
+    let queued = 0;
     const cleanup = () => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       ids.delete(id);
-      left.terminate(); right.terminate();
+      upstreams.delete(tcp);
+      tcp.destroy();
+      ws.terminate();
     };
-    function forward(source, target) {
-      const pending = [];
-      let queued = 0, paused = false, ended = false, opened = false;
-      source.once("open", () => { opened = true; });
-      const send = data => {
-        target.send(data, { binary: true, compress: false }, error => {
-          // An Agent may abort a response while a write callback is pending.
-          // That socket can still report OPEN; isolate the cancelled flow.
-          if (error) return cleanup();
-          if (paused && target.bufferedAmount <= MAX_BUFFER_BYTES / 2) {
-            paused = false; source.resume();
-          }
-        });
-        if (target.bufferedAmount > MAX_BUFFER_BYTES && !paused) {
-          paused = true; source.pause();
+    const send = (data) => {
+      ws.send(data, { binary: true, compress: false }, (error) => {
+        // An Agent may abort a response while a write callback is pending.
+        if (error) return cleanup();
+        if (tcpPaused && ws.bufferedAmount <= MAX_BUFFER_BYTES / 2) {
+          tcpPaused = false; tcp.resume();
         }
-      };
-      source.on("message", (data, binary) => {
-        if (!binary) return fail("non-binary-frame");
-        if (finished) return;
-        if (target.readyState === WebSocket.OPEN) send(data);
-        else if (target.readyState === WebSocket.CONNECTING) {
-          queued += data.length;
-          if (queued > MAX_BUFFER_BYTES) return fail();
-          pending.push(data);
-          if (!paused) { paused = true; source.pause(); }
-        } else cleanup();
       });
-      target.once("open", () => {
-        for (const data of pending) send(data);
-        pending.length = 0; queued = 0;
-        if (paused && target.bufferedAmount <= MAX_BUFFER_BYTES / 2) { paused = false; source.resume(); }
-        if (ended) target.close(1000);
-      });
-      source.once("close", () => {
-        ended = true;
-        // The close frame follows all previously queued data. Preserve EOF
-        // ordering rather than terminating the other leg at TCP shutdown.
-        if (target.readyState === WebSocket.OPEN) target.close(1000);
-        if (target.readyState === WebSocket.CLOSED) cleanup();
-        else timer ||= setTimeout(cleanup, 30000).unref();
-      });
-      source.once("error", () => opened ? cleanup() : fail("channel-error"));
-      source.once("unexpected-response", () => fail("channel-upgrade"));
-    }
-    forward(left, right); forward(right, left);
+      if (ws.bufferedAmount > MAX_BUFFER_BYTES && !tcpPaused) {
+        tcpPaused = true; tcp.pause();
+      }
+    };
+    tcp.on("data", (data) => {
+      if (finished) return;
+      if (wsOpen && ws.readyState === WebSocket.OPEN) return send(data);
+      if (ws.readyState !== WebSocket.CONNECTING) return cleanup();
+      queued += data.length;
+      if (queued > MAX_BUFFER_BYTES) return cleanup();
+      pending.push(data);
+      if (!tcpPaused) { tcpPaused = true; tcp.pause(); }
+    });
+    ws.once("open", () => {
+      wsOpen = true;
+      for (const data of pending) send(data);
+      pending.length = 0; queued = 0;
+      if (tcpPaused && ws.bufferedAmount <= MAX_BUFFER_BYTES / 2) { tcpPaused = false; tcp.resume(); }
+    });
+    ws.on("message", (data, binary) => {
+      if (!binary) return fail("non-binary-frame");
+      if (finished) return;
+      if (!tcp.write(data) && !wsPaused) {
+        wsPaused = true;
+        ws._socket?.pause();
+        tcp.once("drain", () => { wsPaused = false; ws._socket?.resume(); });
+      }
+    });
+    // Preserve EOF ordering: a close frame follows all queued data, and TCP
+    // FIN follows all written data. Neither leg is cut at the first EOF.
+    tcp.once("end", () => {
+      if (ws.readyState === WebSocket.OPEN) ws.close(1000);
+      else if (ws.readyState === WebSocket.CONNECTING) ws.once("open", () => ws.close(1000));
+      timer ||= setTimeout(cleanup, GRACEFUL_CLOSE_TIMEOUT_MS).unref();
+    });
+    ws.once("close", () => {
+      tcp.end();
+      if (tcp.destroyed) return cleanup();
+      timer ||= setTimeout(cleanup, GRACEFUL_CLOSE_TIMEOUT_MS).unref();
+    });
+    tcp.once("close", () => {
+      if (ws.readyState === WebSocket.CLOSED) cleanup();
+      else timer ||= setTimeout(cleanup, GRACEFUL_CLOSE_TIMEOUT_MS).unref();
+    });
+    // A refused upstream means the host Guardian is gone: fail closed.
+    // Sockets may emit more than one error; every one must be handled.
+    tcp.on("error", () => tcpConnected ? cleanup() : (cleanup(), fail("guardian-unavailable")));
+    ws.on("error", () => wsOpen ? cleanup() : fail("channel-error"));
+    ws.once("unexpected-response", () => fail("channel-upgrade"));
   }
   const control = socket(`${workloadUrl}/control`);
   control.on("message", (data, binary) => {
     let value;
     try { if (binary || data.length > 1024) throw new Error(); value = JSON.parse(data.toString()); }
     catch { return fail(); }
-    if (value.kind !== "open" || !/^[a-f0-9]{32}$/.test(value.id) || ids.has(value.id) || ids.size >= 128) return fail();
+    if (value.kind !== "open" || !/^[a-f0-9]{32}$/.test(value.id) || ids.has(value.id)) return fail();
+    // All workload egress crosses this relay. Beyond the bound, leave the flow
+    // unclaimed (the bridge refuses it) rather than cutting every other flow.
+    if (ids.size >= MAX_ACTIVE_FLOWS) return;
     ids.add(value.id); connectFlow(value.id);
   });
   control.once("close", () => fail("control-closed"));

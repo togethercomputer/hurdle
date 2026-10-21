@@ -739,4 +739,21 @@ test("egress normalization fails closed on partial or untrusted exchange facts",
     exchangeFactProfiles: target.egress.exchangeFactProfiles,
     redactText: String,
   }), /invalid exchange facts/);
+
+  // An all-host Guardian may observe the same method and path on a host the
+  // Target does not own; it computes facts only for relevant hosts.
+  const elsewhere = { ...structuredClone(baseEvent), host: "api.other.example" };
+  delete elsewhere.exchangeFacts;
+  const collection = (event) => ({
+    collections: [{ status: "captured", requests: [event], provenance: baseProvenance }],
+    selectedFieldNames: [],
+    exchangeFactProfiles: target.egress.exchangeFactProfiles,
+    redactText: String,
+  });
+  assert.throws(() => normalizeEgressCollections(collection(elsewhere)), /invalid exchange facts/);
+  const [normalized] = normalizeEgressCollections({ ...collection(elsewhere), relevantHosts: ["api.example.com"] });
+  assert.equal(normalized.requests[0].exchangeFacts, undefined);
+  const unrelevant = { ...structuredClone(baseEvent) };
+  delete unrelevant.exchangeFacts;
+  assert.throws(() => normalizeEgressCollections({ ...collection(unrelevant), relevantHosts: ["API.EXAMPLE.COM"] }), /invalid exchange facts/);
 });
