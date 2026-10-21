@@ -87,6 +87,42 @@ function active(signal) {
   if (signal?.aborted)
     throw Object.assign(new Error("cancelled"), { name: "AbortError" });
 }
+// Agent model credentials the controller-host Guardian substitutes, so the
+// workload only ever holds surrogates. Each is sent only to its own hosts.
+const AGENT_CREDENTIAL_ROUTES = Object.freeze({
+  ANTHROPIC_API_KEY: { hosts: ["api.anthropic.com"], headerNames: ["x-api-key", "authorization"] },
+  CLAUDE_CODE_OAUTH_TOKEN: { hosts: ["api.anthropic.com"], headerNames: ["authorization"] },
+  CODEX_API_KEY: { hosts: ["api.openai.com"], headerNames: ["authorization"] },
+  CODEX_ACCESS_TOKEN: { hosts: ["chatgpt.com", "api.openai.com"], headerNames: ["authorization"] },
+});
+
+// Keeps the shape a CLI may inspect before sending: a key's non-secret
+// prefix (sk-ant-oat01-), or a JWT's header and claims with a fresh
+// signature. The signature, not the claims, is what grants access.
+export function agentCredentialSurrogate(value) {
+  const random = randomBytes(32).toString("base64url");
+  const parts = value.split(".");
+  if (parts.length === 3 && parts.every((part) => /^[A-Za-z0-9_-]+$/.test(part))) {
+    return `${parts[0]}.${parts[1]}.${random}`;
+  }
+  // Only published, non-secret key prefixes are kept; anything else could
+  // carry part of the secret.
+  const prefix = /^sk-(?:ant-(?:api|oat|admin)\d{2}-|proj-|svcacct-)?/.exec(value)?.[0] ?? "";
+  return `${prefix}${random}`;
+}
+
+function agentCredentials(env = {}) {
+  return Object.entries(env)
+    .filter(([name, value]) => Object.hasOwn(AGENT_CREDENTIAL_ROUTES, name)
+      && typeof value === "string" && value.trim())
+    .map(([environmentName, value]) => ({
+      environmentName,
+      value,
+      surrogate: agentCredentialSurrogate(value),
+      ...AGENT_CREDENTIAL_ROUTES[environmentName],
+    }));
+}
+
 function noEgress(reason = "unsupported-platform") {
   return {
     status: "unavailable",
@@ -177,6 +213,10 @@ export function createTogetherExecutionEnvironment({
               ? `tae_surrogate_${randomBytes(32).toString("base64url")}`
               : credentialValues[environmentName],
           ]));
+          const agentSubstitutions = agentCredentials(envelope.launchPlan.env);
+          const agentSurrogates = Object.fromEntries(agentSubstitutions.map(
+            ({ environmentName, surrogate }) => [environmentName, surrogate],
+          ));
           let resource;
           let process = null;
           let phase = "acquire";
@@ -211,6 +251,7 @@ export function createTogetherExecutionEnvironment({
               capture: envelope.capture,
               credentialBindings: envelope.credentialBindings, credentialValues,
               surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
+              agentCredentials: agentSubstitutions,
               signal: envelope.signal,
             });
             active(envelope.signal);
@@ -292,6 +333,7 @@ export function createTogetherExecutionEnvironment({
                           ([name]) => !HOST_LOCATORS.has(name),
                         ),
                       ),
+                      ...agentSurrogates,
                       ...workloadCredentials,
                       ...(guardianSession?.workloadEnvironment ?? {}),
                     },

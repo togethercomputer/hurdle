@@ -273,8 +273,12 @@ and credential substitution. Other hosts, including the Agent's model API and
 package registries, are streamed and recorded as metadata rows (method, host,
 path without query, status, duration) within a separate budget; exhausting it
 drops rows without failing capture. The Guardian retains the real target
-credentials and private CA; the workload receives only public trust material and
-surrogate target credentials. Together's management bearer token stays in the
+credentials, the Agent's model credentials (`ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`/`OPENAI_API_KEY`,
+`CODEX_ACCESS_TOKEN`) and the private CA; the workload receives only public trust
+material and surrogates. The Guardian swaps each surrogate for its real value
+only in that credential's headers, only over HTTPS to its own provider hosts
+(`api.anthropic.com`, `api.openai.com`, `chatgpt.com`). Together's management bearer token stays in the
 controller.
 
 Keep this machine online while cells run: an end-to-end CONNECT preflight runs

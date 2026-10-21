@@ -391,6 +391,10 @@ class GenericGuardian:
             if self.sealed:
                 flow.response = http.Response.make(503, b"capture sealed")
                 return
+            # Agent credentials are substituted here too, but only over HTTPS
+            # to the default port; otherwise the surrogate goes out unchanged.
+            if (flow.request.scheme or "").lower() == "https" and flow.request.port == 443:
+                self._substitute(flow, host)
             # Never buffer agent model streams or package downloads.
             flow.request.stream = True
             self._observed[flow.id] = time.monotonic()
@@ -426,6 +430,12 @@ class GenericGuardian:
                 {"content-type": "text/plain; charset=utf-8"},
             )
             return
+        self._substitute(flow, host)
+        self.active += 1
+        self._started[flow.id] = time.monotonic()
+
+    @staticmethod
+    def _substitute(flow: http.HTTPFlow, host: str) -> None:
         for binding in SUBSTITUTIONS:
             if host not in binding.get("hosts", []):
                 continue
@@ -437,8 +447,6 @@ class GenericGuardian:
                 current = flow.request.headers.get(header_name)
                 if current is not None and surrogate in current:
                     flow.request.headers[header_name] = current.replace(surrogate, value)
-        self.active += 1
-        self._started[flow.id] = time.monotonic()
 
     def _append(self, observed: dict[str, object]) -> None:
         if self.sequence >= MAX_ROWS:

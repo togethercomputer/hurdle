@@ -140,7 +140,10 @@ export function createTogetherGuardianController({
   spawnProcess = spawn,
 } = {}) {
   return Object.freeze({
-    async prepare({ capture, credentialBindings, credentialValues, surrogates, profile, signal }) {
+    async prepare({
+      capture, credentialBindings, credentialValues, surrogates, profile, signal,
+      agentCredentials = [],
+    }) {
       if (profile !== "external-guardian-http-metadata-v1") {
         throw new TypeError("unsupported external Guardian capture profile");
       }
@@ -154,7 +157,12 @@ export function createTogetherGuardianController({
           value: credentialValues[environmentName],
           hosts: delivery.hosts,
           headerNames: delivery.headerNames,
-        }));
+        }))
+        // The Agent's own model credentials: the workload holds surrogates
+        // and the real values exist only in this host process.
+        .concat(agentCredentials.map(({ surrogate, value, hosts, headerNames }) => ({
+          surrogate, value, hosts: [...hosts], headerNames: [...headerNames],
+        })));
       const directory = await mkdtemp(join(tmpdir(), "hurdle-guardian-"));
       const session = {
         directory,

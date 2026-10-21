@@ -80,10 +80,16 @@ test("Together host Guardian runs the proxy locally, routes all workload egress 
   });
   process.env.HURDLE_TEST_HOST_SECRET = "host-only-secret";
   t.after(() => { delete process.env.HURDLE_TEST_HOST_SECRET; });
-  const session = await controller.prepare({ capture, ...credentials });
+  const session = await controller.prepare({ capture, ...credentials, agentCredentials: [{
+    environmentName: "CLAUDE_CODE_OAUTH_TOKEN", value: "real-agent-token", surrogate: "agent-surrogate",
+    hosts: ["api.anthropic.com"], headerNames: ["authorization"],
+  }] });
   const proxyEnvironment = JSON.parse(await readFile(join(session.directory, "env.json"), "utf8"));
   assert.equal(proxyEnvironment.TAE_EGRESS_INTERCEPT_ALL, "1");
-  assert.deepEqual(JSON.parse(proxyEnvironment.TAE_EGRESS_SUBSTITUTIONS), [{ surrogate: "surrogate-key", value: "real-key", hosts: ["api.example.com"], headerNames: ["authorization"] }]);
+  assert.deepEqual(JSON.parse(proxyEnvironment.TAE_EGRESS_SUBSTITUTIONS), [
+    { surrogate: "surrogate-key", value: "real-key", hosts: ["api.example.com"], headerNames: ["authorization"] },
+    { surrogate: "agent-surrogate", value: "real-agent-token", hosts: ["api.anthropic.com"], headerNames: ["authorization"] },
+  ]);
   assert.equal(proxyEnvironment.HURDLE_TEST_HOST_SECRET, undefined, "host variables must not reach the proxy");
 
   const workload = fakeWorkload();
@@ -93,7 +99,7 @@ test("Together host Guardian runs the proxy locally, routes all workload egress 
   assert.equal(bridge.options.envs.EGRESS_BRIDGE_SELECTIVE_PROXY, undefined, "every flow must reach the controller");
   assert.equal(bridge.options.envs.EGRESS_BRIDGE_URL, undefined);
   assert.equal(bridge.options.envs.EGRESS_BRIDGE_PUBLIC_LISTEN_PORT, "18083");
-  assert.doesNotMatch(JSON.stringify(workload.recorded), /real-key|PRIVATE KEY/);
+  assert.doesNotMatch(JSON.stringify(workload.recorded), /real-key|real-agent-token|PRIVATE KEY/);
   assert.ok(!JSON.stringify(workload.recorded).includes(session.controlToken), "the control token stays on the host");
   const systemTrust = workload.recorded.find(({ command }) => command.includes("update-ca-certificates"));
   assert.equal(systemTrust.options.user, "root");

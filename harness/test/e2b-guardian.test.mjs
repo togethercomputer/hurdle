@@ -1041,11 +1041,16 @@ addon.requestheaders(plaintext)
 assert plaintext.response.status_code == 403
 assert plaintext.request.headers["authorization"] == "Bearer surrogate", "never substitute over plaintext"
 
-model = flow("model", "api.anthropic.com", "/v1/messages?beta=true", headers={"authorization": "Bearer surrogate"})
+model = flow("model", "api.anthropic.com", "/v1/messages?beta=true", headers={"authorization": "Bearer surrogate", "x-api-key": "agent-surrogate"})
 addon.requestheaders(model)
 assert model.response is None, "non-capture hosts are forwarded"
 assert model.request.stream is True
 assert model.request.headers["authorization"] == "Bearer surrogate", "substitutions stay scoped to their hosts"
+assert model.request.headers["x-api-key"] == "real-agent-key", "agent credentials are substituted on their own host"
+plain_model = flow("plain-model", "api.anthropic.com", "/v1/messages", scheme="http", port=80, headers={"x-api-key": "agent-surrogate"})
+addon.requestheaders(plain_model)
+assert plain_model.request.headers["x-api-key"] == "agent-surrogate", "never substitute over plaintext"
+assert plain_model.response is None
 model.response = types.SimpleNamespace(status_code=200, headers={}, stream=False)
 addon.responseheaders(model)
 assert model.response.stream is True
@@ -1091,12 +1096,14 @@ assert (state["rowCount"], state["observedDropped"], state["truncated"]) == (3, 
       TAE_EGRESS_OBSERVED_MAX_ROWS: "2",
       TAE_EGRESS_SUBSTITUTIONS: JSON.stringify([{
         surrogate: "surrogate", value: "real-secret", hosts: ["api.example.com"], headerNames: ["authorization"],
+      }, {
+        surrogate: "agent-surrogate", value: "real-agent-key", hosts: ["api.anthropic.com"], headerNames: ["x-api-key"],
       }]),
     },
   });
   assert.equal(result.status, 0, result.stderr);
   const contents = readFileSync(journal, "utf8");
-  assert.doesNotMatch(contents, /real-secret|surrogate|beta=true/);
+  assert.doesNotMatch(contents, /real-secret|real-agent-key|surrogate|beta=true/);
   const rows = contents.trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(rows.map(({ sequence, host, path, kind }) => [sequence, kind, host, path]), [
     [0, "http-request", "api.example.com", "/v1/models"],

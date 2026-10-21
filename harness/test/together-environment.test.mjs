@@ -5,6 +5,7 @@ import {
   closeExecutionCredentialLease,
 } from "../lib/execution-envelope.mjs";
 import {
+  agentCredentialSurrogate,
   createTogetherExecutionEnvironment,
   normalizeTogetherSettings,
 } from "../lib/execution-environments/together.mjs";
@@ -333,6 +334,48 @@ test("Together capture setup, sealing, cancellation and disposal failures retain
     assert.doesNotMatch(JSON.stringify(result), /private diagnostic|real-target-secret|management-secret/);
   }
 });
+test("Together keeps the Agent's model credentials on the host and gives the workload surrogates", async () => {
+  const realToken = "sk-ant-oat01-real-agent-token-value";
+  let prepared, launched;
+  const f = fixture({
+    guardian: {
+      async prepare(input) { prepared = input; return { workloadEnvironment: {} }; },
+      async attach() {},
+      async seal() { return sealedCollection(); },
+    },
+    async run(_resource, { environment }) {
+      launched = environment;
+      return { exitCode: 0, quiescent: true, durationMs: 1 };
+    },
+  });
+  const result = await f.environment.execute(envelope({
+    launchPlan: { command: "agent", env: { CLAUDE_CODE_OAUTH_TOKEN: realToken }, timeoutMs: 1000 },
+  }));
+  assert.match(launched.CLAUDE_CODE_OAUTH_TOKEN, /^sk-ant-oat01-[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(launched.CLAUDE_CODE_OAUTH_TOKEN, realToken);
+  assert.ok(!JSON.stringify(launched).includes("real-agent-token"), "the workload never receives the real token");
+  assert.deepEqual(prepared.agentCredentials, [{
+    environmentName: "CLAUDE_CODE_OAUTH_TOKEN",
+    value: realToken,
+    surrogate: launched.CLAUDE_CODE_OAUTH_TOKEN,
+    hosts: ["api.anthropic.com"],
+    headerNames: ["authorization"],
+  }]);
+  assert.doesNotMatch(JSON.stringify(result), /real-agent-token/);
+});
+
+test("Agent credential surrogates keep non-secret shape but none of the secret", () => {
+  const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJhY2NvdW50IjoiYSJ9.c2lnbmF0dXJlLXNlY3JldA";
+  const surrogate = agentCredentialSurrogate(jwt);
+  assert.match(surrogate, /^eyJhbGciOiJSUzI1NiJ9\.eyJhY2NvdW50IjoiYSJ9\.[A-Za-z0-9_-]{43}$/);
+  assert.ok(!surrogate.endsWith("c2lnbmF0dXJlLXNlY3JldA"));
+  assert.match(agentCredentialSurrogate("sk-proj-abcdef"), /^sk-proj-[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("opaque"), /^[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("sk-ant-api03-secret"), /^sk-ant-api03-[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("agent-auth-secret-value"), /^[A-Za-z0-9_-]{43}$/, "unknown prefixes may be secret");
+  assert.notEqual(agentCredentialSurrogate("sk-x"), agentCredentialSurrogate("sk-x"));
+});
+
 test("Together seal failure is incomplete only for tasks with capture hosts", async () => {
   for (const captured of [false, true]) {
     const f = fixture({ guardian: {
@@ -424,7 +467,8 @@ test('Together composes with the public Suite API, Claude adapter, checks, and c
     async acquire() { return { sandboxId: 'controlled-sandbox' }; },
     async stage(_resource, input) { assert.equal(input.fixtures.length, 1); },
     async run(_resource, { onStdout, environment }) {
-      assert.equal(environment.ANTHROPIC_API_KEY, 'agent-auth-test-value');
+      // The workload holds a surrogate; the host Guardian substitutes the key.
+      assert.match(environment.ANTHROPIC_API_KEY, /^[A-Za-z0-9_-]{43}$/);
       assert.equal(environment.TOGETHER_API_KEY, undefined);
       onStdout(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'controlled-session', result: 'Copied fixture', num_turns: 1, total_cost_usd: 0 }) + '\n');
       return { exitCode: 0, signal: null, timedOut: false, quiescent: true, spawnError: null, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), durationMs: 1 };
