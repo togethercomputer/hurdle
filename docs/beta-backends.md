@@ -172,3 +172,37 @@ Read [Together sandbox setup and limitations](./sandbox-setup.md#together-sandbo
 before use. Together runs the egress Guardian on the controller machine, routing
 all sandbox traffic through it, for the same trusted capture, request blocking
 and credential substitution as E2B with one VM per cell.
+
+### Together Lite (experimental)
+
+Together Lite runs a cell on the experimental single-connection sandbox API.
+The sandbox lives for one WebSocket connection, runs a platform-provided image
+named by digest, and has no network access except that connection. Every
+outbound connection the Agent makes reaches this machine as a stream and is
+handed to the same egress Guardian the Together backend uses, so capture,
+request blocking and credential substitution are unchanged. Task fixtures and
+the Agent's workspace files are sent over the connection before the Agent
+starts (4 MiB in total); output artifacts are not collected in this version.
+
+Install the Guardian once with `hurdle setup --sandbox together`, install the
+backend SDKs with `npm run setup:backends`, and write a Runtime with the
+`together-lite` kind. There is no `init` mode for it yet:
+
+```json
+{
+  "schemaVersion": 1,
+  "environment": {
+    "kind": "together-lite",
+    "apiKeyEnv": "TOGETHER_API_KEY",
+    "settings": {
+      "url": "wss://api.together.ai/v1/compute/experimental/run",
+      "image": "sha256:…",
+      "maxLifetimeMs": 600000
+    }
+  },
+  "resultStore": { "kind": "local", "root": "../together-lite-results-v1" }
+}
+```
+
+Keep this machine online while cells run: closing the connection is what ends
+the sandbox. The API is offered for a limited period and will be replaced.

@@ -26,6 +26,14 @@ export function assertRuntimeDependencies({ environment }) {
     }
     return;
   }
+  if (environment?.kind === "together-lite") {
+    try { require.resolve("ws"); require.resolve("yamux-js"); }
+    catch (error) {
+      if (error?.code !== "MODULE_NOT_FOUND") throw error;
+      throw new BackendDependencyError("Together Lite sandbox");
+    }
+    return;
+  }
   if (environment?.kind !== "e2b") return;
   for (const name of ["e2b", "https-proxy-agent", "ws"]) {
     try {

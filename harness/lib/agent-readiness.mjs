@@ -38,6 +38,8 @@ export async function probeAgentCli(command, env) {
 // A Hurdle-built image names the Agent CLIs it holds; caller-owned images are
 // left to the caller.
 function checkManagedImage(environment, adapterIds, setup) {
+  // Together Lite runs a platform-provided image; there is nothing to rebuild.
+  if (environment.kind === "together-lite") return null;
   const together = environment.kind === "together";
   const provider = together ? "together" : "e2b";
   const image = together ? normalizeTogetherSettings(environment.settings).snapshotAlias : environment.settings?.workloadTemplate;
@@ -134,7 +136,7 @@ export async function checkAgentReadiness({
       }
     } else {
       // A host CLI probe is inapplicable; run observes startup inside the VM.
-      checks.push(result("skip", "agent.remote-unverified", `${label} runs inside the ${runtimeProfile.environment.kind === "together" ? "Together" : "E2B"} sandbox; no local CLI installation needed.`));
+      checks.push(result("skip", "agent.remote-unverified", `${label} runs inside the ${runtimeProfile.environment.kind.startsWith("together") ? "Together" : "E2B"} sandbox; no local CLI installation needed.`));
     }
     const name = (claude
       ? ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
@@ -181,6 +183,13 @@ export async function checkAgentReadiness({
         ? result("pass", "runtime.host-guardian", "Egress Guardian installed on this machine.")
         : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })} --sandbox together.`));
     }
+  }
+  if (runtimeProfile.environment.kind === "together-lite" && !allowHostGuardianSetup) {
+    // The Guardian runs on this machine for every cell. The lite API has no
+    // access probe short of connecting, so readiness checks only the install.
+    checks.push(findHostGuardian()
+      ? result("pass", "runtime.host-guardian", "Egress Guardian installed on this machine.")
+      : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })} --sandbox together.`));
   }
   if (runtimeProfile.resultStore.kind === "postgres") {
     const checked = await checkPostgres(runtimeEnv[runtimeProfile.resultStore.databaseUrlEnv]);

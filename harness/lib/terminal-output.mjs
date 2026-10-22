@@ -55,7 +55,7 @@ export function runtimeSummaryRows(runtime, cwd, { inline = false } = {}) {
     : inline ? "Command-line configuration" : "Built-in Local default";
   return [
     ["Runtime", configuration],
-    ["Execution", { local: "Local", e2b: "E2B sandbox", together: "Together sandbox" }[runtime.environment.kind]],
+    ["Execution", { local: "Local", e2b: "E2B sandbox", together: "Together sandbox", "together-lite": "Together sandbox (lite)" }[runtime.environment.kind]],
     ["Store", runtime.resultStore.kind === "postgres" ? "Postgres" : "Filesystem"],
   ];
 }

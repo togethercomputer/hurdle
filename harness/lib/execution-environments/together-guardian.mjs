@@ -76,7 +76,7 @@ async function waitForLocalPort(port, child, signal) {
   throw new Error("Guardian proxy did not start");
 }
 
-async function stopLocalProcess(child) {
+export async function stopLocalProcess(child) {
   if (!child) return;
   const exited = new Promise((resolve) => child.once("exit", resolve));
   // Checked after subscribing, so an exit in between cannot be missed.
@@ -89,7 +89,7 @@ async function stopLocalProcess(child) {
 
 // The control endpoint is served by the proxy itself as a plain-HTTP proxy
 // request, exactly as the in-VM Guardian is controlled.
-function controlState(port, token, action) {
+export function controlState(port, token, action) {
   return new Promise((resolve, reject) => {
     const request = http.request({
       host: "127.0.0.1",

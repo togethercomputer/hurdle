@@ -11,6 +11,7 @@ import {
 } from "./judges/anthropic-json.mjs";
 
 import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
+import { normalizeTogetherLiteSettings } from "./execution-environments/together-lite.mjs";
 
 const MAX_PROFILE_BYTES = 256 * 1024;
 const MAX_JSON_DEPTH = 32;
@@ -300,7 +301,15 @@ function normalizedEnvironment(value, sourcePath) {
     catch (error) { schemaError(error.message, sourcePath, "/environment/settings"); }
     return { kind: "together", apiKeyEnv: environmentName(value.apiKeyEnv, "Together apiKeyEnv", sourcePath, "/environment/apiKeyEnv"), settings: input };
   }
-  schemaError("Runtime Profile Environment kind must be 'local', 'e2b', or 'together'.", sourcePath, "/environment/kind");
+  if (value.kind === "together-lite") {
+    if (!Object.hasOwn(value, "apiKeyEnv")) schemaError("Together Lite Environment requires 'apiKeyEnv'.", sourcePath, "/environment/apiKeyEnv");
+    const input = settings(value.settings ?? {}, sourcePath, "/environment/settings");
+    // The image is the unit of work on this backend, so the profile names it.
+    try { normalizeTogetherLiteSettings(input); }
+    catch (error) { schemaError(error.message, sourcePath, "/environment/settings"); }
+    return { kind: "together-lite", apiKeyEnv: environmentName(value.apiKeyEnv, "Together Lite apiKeyEnv", sourcePath, "/environment/apiKeyEnv"), settings: input };
+  }
+  schemaError("Runtime Profile Environment kind must be 'local', 'e2b', 'together', or 'together-lite'.", sourcePath, "/environment/kind");
 }
 
 function normalizedResultStore(value, sourcePath) {
@@ -410,7 +419,8 @@ export function resolveRuntimeSecrets(profile, env = process.env, needs = {}) {
   if (profile?.environment?.kind === "e2b" && needs.environment !== false) {
     resolved.e2bApiKey = resolveNamedSecret(profile.environment.apiKeyEnv, env);
   }
-  if (profile?.environment?.kind === "together" && needs.environment !== false) {
+  if ((profile?.environment?.kind === "together" || profile?.environment?.kind === "together-lite")
+    && needs.environment !== false) {
     resolved.togetherApiKey = resolveNamedSecret(profile.environment.apiKeyEnv, env);
   }
   if (profile?.resultStore?.kind === "postgres" && needs.resultStore !== false) {

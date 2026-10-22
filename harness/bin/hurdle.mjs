@@ -9,6 +9,7 @@ import { createCodexAdapter } from "../lib/agent-adapters/codex.mjs";
 import { assertRuntimeDependencies, BackendDependencyError } from "../lib/backend-dependencies.mjs";
 import { createE2BExecutionEnvironment, normalizeE2BSettings } from "../lib/execution-environments/e2b.mjs";
 import { createTogetherExecutionEnvironment, normalizeTogetherSettings } from "../lib/execution-environments/together.mjs";
+import { createTogetherLiteExecutionEnvironment } from "../lib/execution-environments/together-lite.mjs";
 import { createLocalExecutionEnvironment } from "../lib/execution-environments/local.mjs";
 import { ANTHROPIC_JSON_JUDGE_ID, createAnthropicJsonJudge } from "../lib/judges/anthropic-json.mjs";
 import { resolveAuthoritySelections } from "../lib/authority-profile.mjs";
@@ -130,6 +131,7 @@ const PRODUCTION_DEPENDENCIES = Object.freeze({
   createLocalExecutionEnvironment,
   createE2BExecutionEnvironment,
   createTogetherExecutionEnvironment,
+  createTogetherLiteExecutionEnvironment,
   assertRuntimeDependencies,
   createAnthropicJsonJudge,
   resolveV1Suite,
@@ -1616,7 +1618,9 @@ async function runCliMain(argv, io, dependencies) {
             })
           : runtimeProfile.environment.kind === "together"
             ? dependencies.createTogetherExecutionEnvironment({ apiKey: runtimeSecrets.togetherApiKey, progressObserver })
-            : dependencies.createLocalExecutionEnvironment(),
+            : runtimeProfile.environment.kind === "together-lite"
+              ? dependencies.createTogetherLiteExecutionEnvironment({ apiKey: runtimeSecrets.togetherApiKey, progressObserver })
+              : dependencies.createLocalExecutionEnvironment(),
         ...(judge === null ? {} : { judge }),
         progressObserver,
       });

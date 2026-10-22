@@ -111,7 +111,7 @@ export function agentCredentialSurrogate(value) {
   return `${prefix}${random}`;
 }
 
-function agentCredentials(env = {}) {
+export function agentCredentials(env = {}) {
   return Object.entries(env)
     .filter(([name, value]) => Object.hasOwn(AGENT_CREDENTIAL_ROUTES, name)
       && typeof value === "string" && value.trim())
