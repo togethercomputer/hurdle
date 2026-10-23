@@ -255,6 +255,16 @@ test("Together capture overflow remains visible to Run Trust", async () => {
   assert.equal(result.process.stdout.complete, false);
 });
 
+test("a sealed-only provider refuses credentials delivered as environment values before anything starts", async () => {
+  const provider = { ...fixture().provider, sealedOnly: true, async acquire() { throw new Error("must not allocate"); } };
+  const guardian = { async prepare() { throw new Error("must not start"); }, async attach() {}, async seal() {} };
+  const environment = createTogetherExecutionEnvironment({ apiKey: "provider", provider, guardian });
+  await assert.rejects(environment.execute(envelope({
+    credentialDefinitions: [{ name: "KEY", delivery: { kind: "environment" } }],
+    credentialValues: { KEY: "real-target-secret" },
+  })), /captured-http-header delivery for KEY/);
+});
+
 function capturedEnvelope(options = {}) {
   return envelope({ target: { egress: { relevantHosts: ["api.example.com"], selectedFields: [] } },
     credentialDefinitions: [{ name: "KEY", delivery: { kind: "captured-http-header", hosts: ["api.example.com"], headerNames: ["authorization"] } }],

@@ -196,6 +196,15 @@ export function createTogetherExecutionEnvironment({
         throw new TypeError(
           "Together workspace artifact metadata is unsupported by this provider",
         );
+      if (provider.sealedOnly) {
+        const exposed = envelope.credentialBindings
+          .filter(({ delivery }) => delivery.kind !== "captured-http-header")
+          .map(({ environmentName }) => environmentName);
+        if (exposed.length)
+          throw new TypeError(
+            `Together sandboxes receive credentials only through the Guardian; declare captured-http-header delivery for ${exposed.join(", ")}`,
+          );
+      }
       return withExecutionCredentialValues(
         envelope,
         async (credentialValues) => {

@@ -212,6 +212,9 @@ export function createTogetherSocketProvider({
   runUrl = togetherRunUrl, taskRoot = TASK_ROOT, artifactRoot = ARTIFACT_ROOT,
 } = {}) {
   return Object.freeze({
+    // The sandbox holds no secrets: credentials reach it only as surrogates the
+    // Guardian swaps on egress, never as environment values.
+    sealedOnly: true,
     async acquire({ apiKey, caCertificate, signal }) {
       return createSocketResource(await connect(runUrl(), apiKey, caCertificate, signal));
     },
