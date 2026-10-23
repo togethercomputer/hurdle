@@ -1,10 +1,12 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { togetherApiUrl } from "./together-api-url.mjs";
+import { mkdtemp, mkdir, copyFile, writeFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseProjectEnvironment } from "./project-environment.mjs";
 import { managedImageAgents, managedImageName, SETUP_AGENT_PACKAGES } from "./managed-images.mjs";
 import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
+import { asset } from "./execution-environments/e2b-guardian.mjs";
 import { ensureHostGuardianRuntime } from "./host-guardian-runtime.mjs";
 import {
   resolveRuntimeProfile,
@@ -49,12 +51,65 @@ export function togetherSandboxDockerfile(agents) {
   ].join("\n");
 }
 
+// Bartender's Hurdle API starts the server inside the sandbox itself, and the
+// controller can only write inputs, run task steps and read results over its
+// one socket. So the default snapshot carries the server and the harness code
+// those steps run, laid out as in this repository so their relative imports and
+// assets resolve, plus the Agent's pinned Node runtime (which the server's
+// WebSocket also uses). Kept under /opt: /tmp may be a fresh tmpfs.
+const BARTENDER_ROOT = "/opt/hurdle";
+export const TOGETHER_BARTENDER_SERVER_COMMAND = `node ${BARTENDER_ROOT}/harness/bin/hurdle-sandbox-server.mjs`;
+export const BARTENDER_CONTEXT_FILES = Object.freeze([
+  "bin/hurdle-sandbox-server.mjs",
+  "lib/authority-profile.mjs",
+  "lib/controller-transcript.mjs",
+  "lib/run-model.mjs",
+  "lib/execution-environments/e2b-guardian.mjs",
+  "lib/execution-environments/linux-sandbox-operations.mjs",
+  "lib/execution-environments/local-workload.mjs",
+  "lib/execution-environments/sandbox-server.mjs",
+  "lib/execution-environments/sandbox-socket-protocol.mjs",
+  "lib/execution-environments/sandbox-task.mjs",
+  "lib/execution-environments/together-workload-egress.mjs",
+  "verify/proxy/agent-node-runtime/package-lock.json",
+  "verify/proxy/agent-node-runtime/package.json",
+  "verify/proxy/generic_guardian.py",
+  "verify/proxy/guardian-node-runtime/package-lock.json",
+  "verify/proxy/guardian-node-runtime/package.json",
+  "verify/proxy/guardian-requirements.lock",
+  "verify/proxy/node_proxy_bootstrap.cjs",
+  "verify/proxy/python_proxy_bootstrap.py",
+  "verify/proxy/tcp_ws_bridge.cjs",
+]);
+const HARNESS_ROOT = resolve(import.meta.dirname, "..");
+
+export function togetherBartenderDockerfile(agents) {
+  return [
+    togetherSandboxDockerfile(agents).trimEnd(),
+    `COPY hurdle/ ${BARTENDER_ROOT}/`,
+    `RUN cd ${BARTENDER_ROOT} && npm ci --omit=dev --ignore-scripts --no-audit --no-fund`,
+    "",
+  ].join("\n");
+}
+
+export async function writeTogetherBartenderContext(directory, agents) {
+  const root = join(directory, "hurdle");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(directory, "Dockerfile"), togetherBartenderDockerfile(agents));
+  for (const file of BARTENDER_CONTEXT_FILES) {
+    await mkdir(dirname(join(root, "harness", file)), { recursive: true });
+    await copyFile(join(HARNESS_ROOT, file), join(root, "harness", file));
+  }
+  for (const file of ["package.json", "package-lock.json"])
+    await copyFile(asset("agent-node-runtime", file), join(root, file));
+}
+
 export async function loadTogetherSetupBackend() {
   const { TogetherSandbox } = await import("together-sandbox");
   const client = (apiKey) =>
     new TogetherSandbox({
       apiKey,
-      baseUrl: "https://api.bartender.codesandbox.io",
+      baseUrl: togetherApiUrl(),
       retry: { maxAttempts: 1 },
     });
   return {

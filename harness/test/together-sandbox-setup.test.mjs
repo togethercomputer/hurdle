@@ -7,7 +7,13 @@ import { join } from "node:path";
 import test from "node:test";
 import { createFrameworkCli } from "../bin/hurdle.mjs";
 import { initializeSuite } from "../lib/starter-suite.mjs";
-import { togetherSandboxDockerfile } from "../lib/together-sandbox-setup.mjs";
+import {
+  BARTENDER_CONTEXT_FILES,
+  TOGETHER_BARTENDER_SERVER_COMMAND,
+  togetherBartenderDockerfile,
+  togetherSandboxDockerfile,
+  writeTogetherBartenderContext,
+} from "../lib/together-sandbox-setup.mjs";
 
 async function fixture(t, example = "copy-message") {
   const root = await mkdtemp(join(tmpdir(), "hurdle-together-setup-test-"));
@@ -225,4 +231,32 @@ test("Together Dockerfile includes pinned agents and Linux controller dependenci
   assert.match(text, /@anthropic-ai\/claude-code@2\.1\.288/);
   assert.match(text, /@openai\/codex@0\.159\.3/);
   assert.throws(() => togetherSandboxDockerfile(["unknown-agent"]));
+});
+
+test("Bartender snapshot context bakes in the sandbox server and everything it loads", async (t) => {
+  const context = await mkdtemp(join(tmpdir(), "hurdle-bartender-context-test-"));
+  t.after(() => rm(context, { recursive: true, force: true }));
+  await writeTogetherBartenderContext(context, ["claude-code", "codex"]);
+
+  const dockerfile = await readFile(join(context, "Dockerfile"), "utf8");
+  assert.equal(dockerfile, togetherBartenderDockerfile(["claude-code", "codex"]));
+  assert.ok(dockerfile.startsWith(togetherSandboxDockerfile(["claude-code", "codex"]).trimEnd()));
+  assert.match(dockerfile, /\nCOPY hurdle\/ \/opt\/hurdle\/\nRUN cd \/opt\/hurdle && npm ci /);
+
+  const harness = join(import.meta.dirname, "..");
+  for (const file of BARTENDER_CONTEXT_FILES)
+    assert.equal(
+      await readFile(join(context, "hurdle", "harness", file), "utf8"),
+      await readFile(join(harness, file), "utf8"),
+    );
+  const runtime = JSON.parse(await readFile(join(context, "hurdle", "package.json"), "utf8"));
+  assert.ok(runtime.dependencies.ws);
+  // Loading the baked modules from the context proves every relative import
+  // and every asset they read at load time was copied.
+  for (const module of ["sandbox-server", "sandbox-task", "together-workload-egress"])
+    await import(join(context, "hurdle", "harness", "lib", "execution-environments", `${module}.mjs`));
+  assert.equal(
+    TOGETHER_BARTENDER_SERVER_COMMAND,
+    "node /opt/hurdle/harness/bin/hurdle-sandbox-server.mjs",
+  );
 });

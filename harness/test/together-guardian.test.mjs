@@ -156,3 +156,15 @@ test("Together application port derivation rejects unknown endpoint formats", ()
   for (const url of ['http://vm-57468.cluster.csb.app', 'https://arbitrary.example.com', 'https://user:secret@vm-57468.cluster.csb.app'])
     assert.throws(() => togetherApplicationHost(url, 18083), /routing is unavailable/);
 });
+
+test("Together application port derivation accepts a local runsb node only when explicitly selected", () => {
+  const node = 'http://sb1-57468-dvbx-node1.192-168-2-2.nip.io:57467';
+  assert.throws(() => togetherApplicationHost(node, 18083), /routing is unavailable/);
+  process.env.HURDLE_TOGETHER_API_URL = 'https://api.bartender.codesandbox.dev';
+  try {
+    assert.equal(togetherApplicationHost(node, 18083), 'sb1-18083-dvbx-node1.192-168-2-2.nip.io:57467');
+    assert.equal(togetherApplicationHost('https://vm-57468.cluster.csb.app', 18083), 'vm-18083.cluster.csb.app');
+  } finally {
+    delete process.env.HURDLE_TOGETHER_API_URL;
+  }
+});

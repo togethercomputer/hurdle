@@ -345,13 +345,17 @@ export async function stopProcess(sandbox, handle, label) {
   throw new Error(`${label} remained active`);
 }
 
-async function installNodeRuntime(sandbox, packageText, lockText, signal) {
+// `bakedRoot` names a directory in the image that already holds this exact
+// runtime's node_modules, installed from the same lockfile at build time.
+async function installNodeRuntime(sandbox, packageText, lockText, signal, bakedRoot = null) {
   await sandbox.commands.run(`mkdir -p ${NODE_ROOT}`, { timeoutMs: 10_000, signal });
   await sandbox.files.write(`${NODE_ROOT}/package.json`, packageText, { signal });
   await sandbox.files.write(`${NODE_ROOT}/package-lock.json`, lockText, { signal });
   await sandbox.files.write(BRIDGE_PATH, BRIDGE, { signal });
   await sandbox.commands.run(
-    `npm --prefix ${NODE_ROOT} ci --ignore-scripts --no-audit --no-fund`,
+    bakedRoot
+      ? `cp -a ${bakedRoot}/node_modules ${NODE_ROOT}/`
+      : `npm --prefix ${NODE_ROOT} ci --ignore-scripts --no-audit --no-fund`,
     { timeoutMs: 120_000, signal },
   );
 }
@@ -421,7 +425,7 @@ async function generateCa(sandbox, signal) {
   return certificate;
 }
 
-export async function installWorkloadTrust(workload, certificate, hosts, signal, firewallSuffix = "", firewallVerdict = "REJECT", { systemTrust = false } = {}) {
+export async function installWorkloadTrust(workload, certificate, hosts, signal, firewallSuffix = "", firewallVerdict = "REJECT", { systemTrust = false, nodeRuntimeRoot = null } = {}) {
   if (!certificate.includes("BEGIN CERTIFICATE") || certificate.includes("PRIVATE KEY")) {
     throw new Error("Refusing invalid Guardian CA material");
   }
@@ -455,7 +459,7 @@ PY`, { timeoutMs: 30_000, signal });
       { timeoutMs: 30_000, signal, user: "root" },
     );
   }
-  await installNodeRuntime(workload, AGENT_NODE_PACKAGE, AGENT_NODE_LOCK, signal);
+  await installNodeRuntime(workload, AGENT_NODE_PACKAGE, AGENT_NODE_LOCK, signal, nodeRuntimeRoot);
   await workload.commands.run(`python3 - <<'PY'
 # seal workload trust permissions: public trust material and bootstraps must be
 # readable, but never writable, by the later isolated Agent identity.

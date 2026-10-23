@@ -25,6 +25,9 @@ LOG_PATH = os.environ["TAE_EGRESS_LOG"]
 CONTROL_TOKEN = os.environ["TAE_EGRESS_CONTROL_TOKEN"]
 CONTROL_HOST = "tae-egress-control.invalid"
 CONTROL_PREFIX = "/__tae_egress_control__"
+# The controller proves the workload -> relay -> Guardian path with a CONNECT
+# to this reserved name when a task has no capture hosts; it never resolves.
+PREFLIGHT_HOST = "preflight.hurdle.invalid"
 MAX_ROWS = min(10_000, max(1, int(os.environ.get("TAE_EGRESS_MAX_ROWS", "10000"))))
 MAX_JOURNAL_BYTES = min(
     15 * 1024 * 1024,
@@ -379,6 +382,11 @@ class GenericGuardian:
         body = json.dumps(self._state(), separators=(",", ":")).encode("utf-8")
         flow.response = http.Response.make(200, body, {"content-type": "application/json"})
         return True
+
+    def http_connect(self, flow: http.HTTPFlow) -> None:
+        # Answer the transport preflight here instead of dialing upstream.
+        if (flow.request.pretty_host or "").lower().rstrip(".") == PREFLIGHT_HOST:
+            flow.response = http.Response.make(200)
 
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         if self._control(flow):

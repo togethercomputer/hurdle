@@ -25,14 +25,23 @@ import {
   workloadProxyEnvironment,
 } from "./e2b-guardian.mjs";
 import { startTogetherControllerRelay } from "./together-controller-relay.mjs";
+import { blockSandboxAgentPort, verifyGuardianPath } from "./together-workload-egress.mjs";
 import {
   findHostGuardianRuntime,
   hostGuardianRuntimeError,
 } from "../host-guardian-runtime.mjs";
+import { togetherUsesLocalControlPlane } from "../together-api-url.mjs";
 
 export const TOGETHER_WORKLOAD_BRIDGE_PORT = 18083;
 const PRODUCER = "together-host-guardian";
-const PREFLIGHT_HOST = "preflight.hurdle.invalid";
+
+function workloadEnvironment(hosts) {
+  return {
+    ...workloadProxyEnvironment(hosts),
+    GIT_SSL_CAINFO: CA_BUNDLE_PATH,
+    PIP_CERT: CA_BUNDLE_PATH,
+  };
+}
 
 // The current SDK exposes the authenticated agent URL rather than url_format.
 // This port substitution has been verified against an actual application port.
@@ -40,12 +49,16 @@ const PREFLIGHT_HOST = "preflight.hurdle.invalid";
 // TODO: switch to the SDK's url_format once it ships.
 export function togetherApplicationHost(agentUrl, port) {
   const url = new URL(agentUrl);
-  if (url.protocol !== "https:" || url.username || url.password
-    || !Number.isSafeInteger(port) || port < 1 || port > 65535
-    || !/-57468\./.test(url.hostname)) {
+  // Together ingress names ports `<id>-<port>.<zone>`; a runsb node addressed
+  // directly (devbox) uses `<id>-<port>-<node host>`, over http only when a
+  // local control plane was explicitly selected.
+  const label = /-57468([.-])/.exec(url.hostname);
+  const protocols = togetherUsesLocalControlPlane() ? ["https:", "http:"] : ["https:"];
+  if (!protocols.includes(url.protocol) || url.username || url.password
+    || !Number.isSafeInteger(port) || port < 1 || port > 65535 || !label) {
     throw new Error("Together application-port routing is unavailable");
   }
-  url.hostname = url.hostname.replace("-57468.", `-${port}.`);
+  url.hostname = url.hostname.replace(label[0], `-${port}${label[1]}`);
   return url.host;
 }
 
@@ -220,6 +233,19 @@ export function createTogetherGuardianController({
       }
     },
     async attach({ workload, session, signal }) {
+      if (typeof workload.attachEgress === "function") {
+        // Bartender's Hurdle API: the workload's only transport is one socket,
+        // which carries every flow to the Guardian, and the server inside the
+        // sandbox seals its own egress with the same steps as below.
+        session.workload = workload;
+        await workload.attachEgress({
+          hosts: session.hosts,
+          openUpstream: () => net.connect({ host: "127.0.0.1", port: session.proxyPort }),
+          signal,
+        });
+        session.workloadEnvironment = workloadEnvironment(session.hosts);
+        return;
+      }
       await installWorkloadTrust(
         workload, session.caCertificate, session.hosts, signal, "-legacy", "DROP",
         { systemTrust: true },
@@ -244,51 +270,22 @@ export function createTogetherGuardianController({
       );
       await waitForPort(workload, RELAY_PORT, "workload relay", signal);
       session.controllerRelay = await startRelay({
-        workloadUrl: `wss://${workload.getHost(TOGETHER_WORKLOAD_BRIDGE_PORT)}`,
+        workloadUrl: `${workload.applicationWebSocketScheme ?? "wss"}://${workload.getHost(TOGETHER_WORKLOAD_BRIDGE_PORT)}`,
         cellToken: session.bridgeToken,
         sandboxToken: workload.agentToken ?? null,
         openUpstream: () => net.connect({ host: "127.0.0.1", port: session.proxyPort }),
         signal,
       });
-      // Prove the complete loopback -> controller -> Guardian TCP path before
-      // starting an Agent. CONNECT opens TLS transport without an API request.
-      const checked = await workload.commands.run(String.raw`node - <<'JS'
-const socket = require('node:net').createConnection({ host: '127.0.0.1', port: 18082 });
-let received = '';
-const timer = setTimeout(() => { socket.destroy(); process.exitCode = 1; }, 10000);
-socket.once('connect', () => socket.write('CONNECT ' + process.env.HURDLE_CAPTURE_HOST + ':443 HTTP/1.1\r\nHost: ' + process.env.HURDLE_CAPTURE_HOST + ':443\r\n\r\n'));
-socket.on('data', data => {
-  received += data.toString();
-  if (received.length > 16384) { socket.destroy(); process.exitCode = 1; }
-  else if (received.includes('\r\n\r\n')) {
-    if (/^HTTP\/1\.[01] 200 /.test(received)) console.log('GUARDIAN_BRIDGE_READY');
-    else process.exitCode = 1;
-    socket.destroy();
-  }
-});
-socket.once('error', () => { process.exitCode = 1; });
-socket.once('close', () => { clearTimeout(timer); if (!/^HTTP\/1\.[01] 200 /.test(received)) process.exitCode = 1; });
-JS`, { user: "root", timeoutMs: 15000, signal,
-        envs: { HURDLE_CAPTURE_HOST: session.hosts[0] ?? PREFLIGHT_HOST } });
-      if (!checked.stdout?.includes("GUARDIAN_BRIDGE_READY")) {
-        throw new Error("Together Guardian end-to-end preflight failed");
-      }
+      await verifyGuardianPath(workload, session.hosts[0], signal);
       session.controllerRelay.assertHealthy();
-      // The SDK root-exec endpoint must never be accessible to the Agent.
-      await workload.commands.run(`set -eu
-for binary in /usr/sbin/iptables-legacy /usr/sbin/ip6tables-legacy; do
-  "$binary" --wait 5 -I OUTPUT 1 -p tcp --dport 57468 -j DROP
-  "$binary" --wait 5 -C OUTPUT -p tcp --dport 57468 -j DROP
-done`, { user: "root", timeoutMs: 10000, signal });
-      session.workloadEnvironment = {
-        ...workloadProxyEnvironment(session.hosts),
-        GIT_SSL_CAINFO: CA_BUNDLE_PATH,
-        PIP_CERT: CA_BUNDLE_PATH,
-      };
+      await blockSandboxAgentPort(workload, signal);
+      session.workloadEnvironment = workloadEnvironment(session.hosts);
     },
     async seal({ session }) {
-      session.controllerRelay.assertHealthy();
-      session.controllerRelay.allowShutdown();
+      // A socket workload carries its flows itself; there is no relay to drain.
+      session.controllerRelay?.assertHealthy();
+      session.controllerRelay?.allowShutdown();
+      session.workload?.assertEgressHealthy?.();
       try {
         const state = await drainSealedGuardian(
           (action) => controlState(session.proxyPort, session.controlToken, action),
@@ -302,7 +299,7 @@ done`, { user: "root", timeoutMs: 10000, signal });
         }
         return sealedJournalCollection(state, await readFile(session.journalPath), PRODUCER);
       } finally {
-        session.controllerRelay.close();
+        session.controllerRelay?.close();
       }
     },
     async close(session) {

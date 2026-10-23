@@ -174,7 +174,7 @@ export async function checkAgentReadiness({
   }
   if (runtimeProfile.environment.kind === "together") {
     const checked = await checkTogetherSandbox(runtimeEnv[runtimeProfile.environment.apiKeyEnv]);
-    checks.push(result(checked.status === "pass" ? "pass" : "fail", "runtime.together", `Together sandbox: ${checked.message}.`));
+    checks.push(result(["pass", "skip"].includes(checked.status) ? checked.status : "fail", "runtime.together", `Together sandbox: ${checked.message}.`));
     // Setup installs the Guardian after readiness passes.
     if (!allowHostGuardianSetup) {
       checks.push(findHostGuardian()

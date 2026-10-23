@@ -337,3 +337,9 @@ test("Together preflight is read-only and omits provider diagnostics", async () 
   assert.equal(rejected.status, "fail");
   assert.doesNotMatch(JSON.stringify(rejected), /private provider body/);
 });
+test("Together preflight leaves the key to Bartender's Hurdle API", async () => {
+  const env = { HURDLE_TOGETHER_RUN_URL: "wss://hurdle.test/v1/compute/experimental/run" };
+  const loadSdk = async () => { throw new Error("the sandbox API is not used"); };
+  assert.equal((await checkTogetherSandboxCredential("key", { loadSdk, env })).status, "skip");
+  assert.equal((await checkTogetherSandboxCredential("", { loadSdk, env })).status, "fail");
+});

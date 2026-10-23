@@ -12,6 +12,8 @@ import {
 } from "../execution-progress.mjs";
 import { deepFreeze, RunSelectionInputError } from "../run-model.mjs";
 import { createTogetherProvider } from "./together-provider.mjs";
+import { createTogetherSocketProvider } from "./together-socket-provider.mjs";
+import { togetherUsesRunSocket } from "../together-api-url.mjs";
 import { randomBytes } from "node:crypto";
 import { validateSandboxEnvelope } from "./e2b.mjs";
 import { createTogetherGuardianController } from "./together-guardian.mjs";
@@ -140,7 +142,7 @@ function noEgress(reason = "unsupported-platform") {
 
 export function createTogetherExecutionEnvironment({
   apiKey,
-  provider = createTogetherProvider(),
+  provider = togetherUsesRunSocket() ? createTogetherSocketProvider() : createTogetherProvider(),
   guardian = createTogetherGuardianController(),
   defaults = DEFAULT_SETTINGS,
   captureMaxBytes = DEFAULT_CONTROLLER_CAPTURE_MAX_BYTES,
@@ -262,6 +264,8 @@ export function createTogetherExecutionEnvironment({
             resource = await provider.acquire({
               ...settings,
               apiKey,
+              // Bartender's Hurdle API hands the Guardian CA to the sandbox.
+              caCertificate: guardianSession.caCertificate,
               signal: envelope.signal,
             });
             resources.push(resource);
