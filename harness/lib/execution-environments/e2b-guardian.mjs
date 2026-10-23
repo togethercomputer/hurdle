@@ -425,7 +425,7 @@ async function generateCa(sandbox, signal) {
   return certificate;
 }
 
-export async function installWorkloadTrust(workload, certificate, hosts, signal, firewallSuffix = "", firewallVerdict = "REJECT", { systemTrust = false, nodeRuntimeRoot = null } = {}) {
+export async function installWorkloadTrust(workload, certificate, hosts, signal, firewallSuffix = "", firewallVerdict = "REJECT", { systemTrust = false, nodeRuntimeRoot = null, captureRouteFirewall = true } = {}) {
   if (!certificate.includes("BEGIN CERTIFICATE") || certificate.includes("PRIVATE KEY")) {
     throw new Error("Refusing invalid Guardian CA material");
   }
@@ -488,6 +488,10 @@ PY`, {
     signal,
     user: "root",
   });
+  // Capture hosts are reached only through the Guardian, so their direct routes
+  // are refused. Resolving them needs DNS in the workload, which a workload whose
+  // node already refuses all of its egress has neither need nor means for.
+  if (!captureRouteFirewall) return;
   await workload.commands.run(`python3 - <<'PY'
 import ipaddress, json, os, socket, subprocess
 

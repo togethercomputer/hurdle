@@ -13,6 +13,7 @@ import {
   createSandboxServer,
 } from "../lib/execution-environments/sandbox-server.mjs";
 import { createTogetherGuardianController } from "../lib/execution-environments/together-guardian.mjs";
+import { createSandboxTask } from "../lib/execution-environments/sandbox-task.mjs";
 import {
   certificateHeader,
   createTogetherSocketProvider,
@@ -252,4 +253,29 @@ test("the local workload honours the sandbox API's command contract", async (t) 
   assert.deepEqual([...await workload.files.read(join(root, "a/b.bin"), { format: "bytes" })], [1, 2, 3]);
   await workload.files.write(join(root, "c.txt"), "text");
   assert.equal(await workload.files.read(join(root, "c.txt")), "text");
+});
+
+test("sandbox setup trusts the Guardian without resolving capture hosts", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "hurdle-sandbox-setup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const caPath = join(root, "guardian-ca.pem");
+  await writeFile(caPath, CA);
+  const commands = [];
+  const workload = {
+    commands: {
+      run: async (command, options = {}) => {
+        commands.push({ command, envs: options.envs });
+        return { exitCode: 0, stdout: "GUARDIAN_BRIDGE_READY", stderr: "" };
+      },
+    },
+    files: { write: async () => {} },
+  };
+  const task = createSandboxTask({ caPath, nodeRuntimeRoot: "/opt/hurdle", workload });
+  await task.run({ kind: "setup", hosts: ["api.together.ai"] });
+  // The node refuses the sandbox's egress, DNS included: nothing may resolve a host.
+  assert.equal(commands.some(({ command }) => command.includes("getaddrinfo")), false);
+  // The path to the Guardian is still proven, for the first capture host.
+  const preflight = commands.find(({ command }) => command.includes("GUARDIAN_BRIDGE_READY"));
+  assert.equal(preflight.envs.HURDLE_CAPTURE_HOST, "api.together.ai");
+  assert.ok(commands.some(({ command }) => command.includes("--dport 57468 -j DROP")));
 });

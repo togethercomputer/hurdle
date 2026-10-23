@@ -21,9 +21,11 @@ export function createSandboxTask({
       if (!Array.isArray(hosts) || hosts.some((host) => typeof host !== "string"))
         throw new TypeError("Sandbox setup requires capture hosts");
       const certificate = await readFile(caPath, "utf8");
+      // Bartender starts the sandbox without internet access, DNS included, so no
+      // route bypasses the Guardian and there is none to refuse.
       await installWorkloadTrust(
         workload, certificate, hosts, undefined, "-legacy", "DROP",
-        { systemTrust: true, nodeRuntimeRoot },
+        { systemTrust: true, nodeRuntimeRoot, captureRouteFirewall: false },
       );
       await verifyGuardianPath(workload, hosts[0]);
       await blockSandboxAgentPort(workload);
