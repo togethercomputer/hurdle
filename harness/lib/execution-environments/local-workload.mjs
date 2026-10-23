@@ -42,9 +42,21 @@ export function createLocalWorkload() {
         stdio: ["ignore", "pipe", "pipe"],
       });
       let failure = null;
+      const timers = new Set();
+      const later = (milliseconds, callback) => {
+        const timer = setTimeout(() => { timers.delete(timer); callback(); }, milliseconds);
+        timers.add(timer);
+      };
+      const signalGroup = (name) => {
+        try { process.kill(-child.pid, name); } catch { /* already gone */ }
+      };
+      // The Agent runner starts the Agent in a process group of its own and
+      // forwards SIGTERM to it, so the group is asked first and killed a moment
+      // later; a SIGKILL would end the runner before it could forward anything.
       const stop = (error) => {
         failure ||= error;
-        try { process.kill(-child.pid, "SIGKILL"); } catch { /* already gone */ }
+        signalGroup("SIGTERM");
+        later(1_000, () => signalGroup("SIGKILL"));
       };
       const timer = setTimeout(() => stop(Object.assign(
         new Error("Local command timed out"), { name: "TimeoutError" },
@@ -62,6 +74,10 @@ export function createLocalWorkload() {
         const exitCode = await new Promise((resolve, reject) => {
           child.once("error", reject);
           child.once("close", (code, killed) => resolve(Number.isInteger(code) ? code : killed ? 128 : 1));
+          // A process that outlived the group, holding the pipes, must not hold
+          // the result: once the shell has exited its output is as complete as
+          // it will get.
+          child.once("exit", () => later(1_000, () => { child.stdout.destroy(); child.stderr.destroy(); }));
         });
         if (failure) throw failure;
         const result = { exitCode, stdout: stdout.snapshot().text, stderr: stderr.snapshot().text };
@@ -70,6 +86,7 @@ export function createLocalWorkload() {
         return result;
       } finally {
         clearTimeout(timer);
+        for (const timer of timers) clearTimeout(timer);
         signal?.removeEventListener("abort", onAbort);
       }
     },

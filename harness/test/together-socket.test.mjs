@@ -246,6 +246,12 @@ test("the local workload honours the sandbox API's command contract", async (t) 
   assert.equal(streamed, "hi");
   await assert.rejects(workload.commands.run("echo out; exit 3"), (error) => error.exitCode === 3 && error.stdout === "out\n");
   await assert.rejects(workload.commands.run("sleep 5", { timeoutMs: 50 }), (error) => error.name === "TimeoutError");
+  // A timed-out command whose descendant left the process group, as the Agent
+  // runner's child does, still returns once the shell is gone.
+  const orphaned = "node -e \"require('node:child_process').spawn('sleep', ['5'], { detached: true, stdio: 'inherit' }).unref(); setTimeout(() => {}, 5000)\"";
+  const started = Date.now();
+  await assert.rejects(workload.commands.run(orphaned, { timeoutMs: 100 }), (error) => error.name === "TimeoutError");
+  assert.ok(Date.now() - started < 4_000, "the orphan held the result");
   assert.equal((await workload.commands.run("echo $HURDLE_X", { envs: { HURDLE_X: "y" } })).stdout, "y\n");
   const root = await mkdtemp(join(tmpdir(), "hurdle-local-workload-"));
   t.after(() => rm(root, { recursive: true, force: true }));
