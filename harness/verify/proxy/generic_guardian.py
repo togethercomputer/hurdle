@@ -9,12 +9,15 @@ within a separate, non-truncating budget.
 from __future__ import annotations
 
 import datetime
+import functools
 import gzip
 import hashlib
 import io
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
 from urllib.parse import urlsplit
 
@@ -320,6 +323,41 @@ def _load_exchange_facts() -> dict[str, object] | None:
 EXCHANGE_FACTS = _load_exchange_facts()
 
 
+# Public by every other measure, yet a cloud metadata service.
+_NON_GLOBAL_EXCEPTIONS = (ipaddress.ip_network("168.63.129.16/32"),)
+
+
+@functools.lru_cache(maxsize=1024)
+def _non_global_destination(host: str) -> bool:
+    """True when the host names a non-public address.
+
+    With every host intercepted, the Guardian dials upstream from the
+    controller machine, so an agent must not reach that machine's loopback,
+    its network or a cloud metadata service through it. A name that does not
+    resolve is left to fail on its own; that keeps reserved control and
+    preflight names working.
+    """
+    host = (host or "").strip().lower().rstrip(".").strip("[]")
+    if not host:
+        return False
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except (OSError, UnicodeError):
+            return False
+        addresses = {
+            ipaddress.ip_address(sockaddr[0])
+            for family, _, _, _, sockaddr in answers
+            if family in (socket.AF_INET, socket.AF_INET6)
+        }
+    return any(
+        not address.is_global or any(address in network for network in _NON_GLOBAL_EXCEPTIONS)
+        for address in addresses
+    )
+
+
 class GenericGuardian:
     def __init__(self) -> None:
         self.active = 0
@@ -384,14 +422,23 @@ class GenericGuardian:
         return True
 
     def http_connect(self, flow: http.HTTPFlow) -> None:
+        host = (flow.request.pretty_host or "").lower().rstrip(".")
         # Answer the transport preflight here instead of dialing upstream.
-        if (flow.request.pretty_host or "").lower().rstrip(".") == PREFLIGHT_HOST:
+        if host == PREFLIGHT_HOST:
             flow.response = http.Response.make(200)
+        # A CONNECT names its destination before any upstream connection or
+        # TLS handshake; refusing here keeps the proxy from dialing at all.
+        elif INTERCEPT_ALL and _non_global_destination(host):
+            flow.response = http.Response.make(403, b"destination is not a public address")
 
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         if self._control(flow):
             return
         host = (flow.request.pretty_host or "").lower().rstrip(".")
+        if INTERCEPT_ALL and _non_global_destination(host):
+            # Absolute-form plaintext requests never pass through http_connect.
+            flow.response = http.Response.make(403, b"destination is not a public address")
+            return
         if host not in CAPTURE_HOSTS:
             if not INTERCEPT_ALL:
                 flow.response = http.Response.make(403, b"capture route rejected")
