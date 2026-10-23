@@ -74,6 +74,7 @@
     "hurdle": "node harness/bin/hurdle.mjs",
     "preflight": "node harness/bin/preflight.mjs",
     "runtime:init": "node harness/bin/init-runtime.mjs",
+    "together:bartender-context": "node harness/bin/together-bartender-context.mjs",
     "db:migrate": "node harness/bin/migrate-postgres-result-store.mjs",
     "quickstart": "node harness/bin/source-quickstart.mjs",
     "showcase": "npm run legacy --",

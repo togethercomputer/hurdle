@@ -5,6 +5,7 @@ import {
   closeExecutionCredentialLease,
 } from "../lib/execution-envelope.mjs";
 import {
+  agentCredentialSurrogate,
   createTogetherExecutionEnvironment,
   normalizeTogetherSettings,
 } from "../lib/execution-environments/together.mjs";
@@ -37,8 +38,39 @@ function envelope(options = {}) {
     ...options,
   });
 }
+function sealedCollection() {
+  return {
+    status: "captured",
+    requests: [],
+    provenance: {
+      producer: "together-host-guardian",
+      authority: "environment",
+      lifecyclePhase: "execution",
+      capturedAt: new Date().toISOString(),
+      trust: "environment-observed",
+    },
+  };
+}
+function stubGuardian() {
+  return {
+    async prepare() { return { workloadEnvironment: {} }; },
+    async attach() {},
+    async seal() { return sealedCollection(); },
+  };
+}
 function fixture(options = {}) {
   const events = [];
+  const guardian = options.guardian ?? {
+    async prepare({ sandbox }) {
+      // The Guardian runs on the controller host, not in a sandbox.
+      assert.equal(sandbox, undefined);
+      events.push("guardian:prepare");
+      return { workloadEnvironment: {} };
+    },
+    async attach() { events.push("guardian:attach"); },
+    async seal() { events.push("guardian:seal"); return sealedCollection(); },
+    close(session) { if (session) events.push("guardian:close"); },
+  };
   const provider = {
     async acquire() {
       events.push("acquire");
@@ -83,7 +115,7 @@ function fixture(options = {}) {
     environment: createTogetherExecutionEnvironment({
       apiKey: "provider-secret",
       provider,
-      ...(options.guardian ? { guardian: options.guardian } : {}),
+      guardian,
     }),
   };
 }
@@ -91,17 +123,22 @@ test("Together runs with controller evidence and a confirmed disposal barrier", 
   const f = fixture();
   const result = await f.environment.execute(envelope());
   assert.deepEqual(f.events, [
+    "guardian:prepare",
     "acquire",
+    "guardian:attach",
     "stage",
     "run",
+    "guardian:seal",
     "collect",
+    "guardian:close",
     "dispose",
     "confirm",
   ]);
   assert.equal(result.process.stdout.text, "controller transcript\n");
   assert.equal(result.process.exitCode, 0);
   assert.deepEqual(result.integrityIssues, []);
-  assert.equal(result.egressCollections[0].status, "unavailable");
+  // Tasks without capture hosts still journal all egress for diagnosis.
+  assert.equal(result.egressCollections[0].status, "captured");
   assert.ok(
     f.environment.capabilities.includes("environment.trusted-egress-capture"),
   );
@@ -133,20 +170,24 @@ test("Together rejects invalid credential scopes before allocation", async () =>
 });
 test("Together disposes resources returned after cancellation during allocation", async () => {
   let allocated;
+  let acquiring;
+  const acquireCalled = new Promise((resolve) => { acquiring = resolve; });
   const controller = new AbortController();
   const f = fixture({
     acquire: () =>
       new Promise((resolve) => {
         allocated = resolve;
+        acquiring();
       }),
   });
   const pending = f.environment.execute(
     envelope({ signal: controller.signal }),
   );
+  await acquireCalled;
   controller.abort();
   allocated({ sandboxId: "late-resource" });
   const result = await pending;
-  assert.deepEqual(f.events, ["dispose", "confirm"]);
+  assert.deepEqual(f.events, ["guardian:prepare", "guardian:close", "dispose", "confirm"]);
   assert.equal(result.integrityIssues[0].code, "environment.cancelled");
 });
 test("Together failure and non-quiescence never produce a passing artifact capture", async () => {
@@ -203,6 +244,10 @@ test("Together capture overflow remains visible to Run Trust", async () => {
   const environment = createTogetherExecutionEnvironment({
     apiKey: "provider",
     provider: f.provider,
+    guardian: {
+      async prepare() { return {}; }, async attach() {},
+      async seal() { return sealedCollection(); },
+    },
     captureMaxBytes: 1,
   });
   const result = await environment.execute(envelope());
@@ -216,10 +261,10 @@ function capturedEnvelope(options = {}) {
     credentialValues: { KEY: "real-target-secret" }, ...options });
 }
 
-test("Together API execution keeps target secrets in the Guardian and disposes both resources after sealing", async () => {
+test("Together API execution keeps target secrets in the host Guardian and disposes its one sandbox after sealing", async () => {
   const calls = [], progress = [];
   const provider = {
-    async acquire({ role = "execution" }) { calls.push(`acquire:${role}`); return { sandboxId: role }; },
+    async acquire() { calls.push("acquire"); return { sandboxId: "execution" }; },
     async stage() { calls.push("stage"); },
     async run(_resource, { environment }) {
       calls.push("run");
@@ -240,12 +285,12 @@ test("Together API execution keeps target secrets in the Guardian and disposes b
       return { workloadEnvironment: { HTTPS_PROXY: "http://127.0.0.1:18082" } };
     },
     async attach() { calls.push("attach"); },
-    async seal() { calls.push("seal"); return { status: "captured", requests: [], provenance: { producer: "together-guardian" } }; },
+    async seal() { calls.push("seal"); return sealedCollection(); },
   };
   const environment = createTogetherExecutionEnvironment({ apiKey: "management-secret", provider, guardian, progressObserver: { observe: event => progress.push(event) } });
   const result = await environment.execute(capturedEnvelope());
-  assert.deepEqual(calls, ["acquire:capture", "prepare", "acquire:execution", "attach", "stage", "run", "seal", "artifacts", "dispose:execution", "dispose:capture"]);
-  assert.deepEqual(progress.filter(event => event.kind === "environment-resource-allocated").map(event => event.resource.role), ["guardian", "agent"]);
+  assert.deepEqual(calls, ["prepare", "acquire", "attach", "stage", "run", "seal", "artifacts", "dispose:execution"]);
+  assert.deepEqual(progress.filter(event => event.kind === "environment-resource-allocated").map(event => event.resource.role), ["agent"]);
   assert.deepEqual(progress.filter(event => event.kind === "environment-status").map(event => event.status), [
     "starting-guardian", "guardian-started", "starting-sandbox", "sandbox-started",
     "preparing-environment", "preparing-workspace", "agent-running", "collecting-results", "stopping-sandboxes",
@@ -259,7 +304,7 @@ test("Together capture setup, sealing, cancellation and disposal failures retain
   for (const mode of ["prepare", "seal", "late-cancel", "dispose", "relay-close"]) {
     const calls = [], progress = [], controller = new AbortController();
     const provider = {
-      async acquire({ role = "execution" }) { calls.push(`acquire:${role}`); if (mode === "late-cancel") controller.abort(); return { sandboxId: role }; },
+      async acquire() { calls.push("acquire"); if (mode === "late-cancel") controller.abort(); return { sandboxId: "execution" }; },
       async stage() {}, async run() { return { exitCode: 0, quiescent: true, durationMs: 1 }; },
       async collectArtifacts() { return []; },
       async dispose(resource) { calls.push(`dispose:${resource.sandboxId}`); if (mode === "dispose" && resource.sandboxId === "execution") throw new Error("private diagnostic"); },
@@ -273,16 +318,77 @@ test("Together capture setup, sealing, cancellation and disposal failures retain
     const environment = createTogetherExecutionEnvironment({ apiKey: "management-secret", provider, guardian, progressObserver: { observe: event => progress.push(event) } });
     const result = await environment.execute(capturedEnvelope({ signal: controller.signal }));
     assert.ok(result.integrityIssues.length, mode);
+    if (mode === "prepare") assert.ok(!progress.some(event => event.status === "guardian-started"), mode);
     if (["prepare", "late-cancel"].includes(mode)) {
-      assert.ok(!progress.some(event => event.status === "guardian-started" || event.status === "agent-running"), mode);
+      assert.ok(!progress.some(event => event.status === "agent-running"), mode);
     }
-    assert.equal(progress.at(-1).status, "stopping-sandboxes", mode);
-    assert.ok(calls.includes("dispose:capture"), mode);
-    if (["seal", "dispose", "relay-close"].includes(mode)) assert.ok(calls.includes("dispose:execution"), mode);
+    if (mode === "prepare") {
+      // No sandbox is allocated when the host Guardian cannot start.
+      assert.deepEqual(calls, [], mode);
+      assert.equal(progress.at(-1).status, "starting-guardian", mode);
+    } else {
+      assert.equal(progress.at(-1).status, "stopping-sandboxes", mode);
+      assert.ok(calls.includes("dispose:execution"), mode);
+    }
     if (!["dispose", "relay-close"].includes(mode)) assert.equal(result.egressCollections[0].status, "unavailable", mode);
     assert.doesNotMatch(JSON.stringify(result), /private diagnostic|real-target-secret|management-secret/);
   }
 });
+test("Together keeps the Agent's model credentials on the host and gives the workload surrogates", async () => {
+  const realToken = "sk-ant-oat01-real-agent-token-value";
+  let prepared, launched;
+  const f = fixture({
+    guardian: {
+      async prepare(input) { prepared = input; return { workloadEnvironment: {} }; },
+      async attach() {},
+      async seal() { return sealedCollection(); },
+    },
+    async run(_resource, { environment }) {
+      launched = environment;
+      return { exitCode: 0, quiescent: true, durationMs: 1 };
+    },
+  });
+  const result = await f.environment.execute(envelope({
+    launchPlan: { command: "agent", env: { CLAUDE_CODE_OAUTH_TOKEN: realToken }, timeoutMs: 1000 },
+  }));
+  assert.match(launched.CLAUDE_CODE_OAUTH_TOKEN, /^sk-ant-oat01-[A-Za-z0-9_-]{43}$/);
+  assert.notEqual(launched.CLAUDE_CODE_OAUTH_TOKEN, realToken);
+  assert.ok(!JSON.stringify(launched).includes("real-agent-token"), "the workload never receives the real token");
+  assert.deepEqual(prepared.agentCredentials, [{
+    environmentName: "CLAUDE_CODE_OAUTH_TOKEN",
+    value: realToken,
+    surrogate: launched.CLAUDE_CODE_OAUTH_TOKEN,
+    hosts: ["api.anthropic.com"],
+    headerNames: ["authorization"],
+  }]);
+  assert.doesNotMatch(JSON.stringify(result), /real-agent-token/);
+});
+
+test("Agent credential surrogates keep non-secret shape but none of the secret", () => {
+  const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJhY2NvdW50IjoiYSJ9.c2lnbmF0dXJlLXNlY3JldA";
+  const surrogate = agentCredentialSurrogate(jwt);
+  assert.match(surrogate, /^eyJhbGciOiJSUzI1NiJ9\.eyJhY2NvdW50IjoiYSJ9\.[A-Za-z0-9_-]{43}$/);
+  assert.ok(!surrogate.endsWith("c2lnbmF0dXJlLXNlY3JldA"));
+  assert.match(agentCredentialSurrogate("sk-proj-abcdef"), /^sk-proj-[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("opaque"), /^[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("sk-ant-api03-secret"), /^sk-ant-api03-[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("agent-auth-secret-value"), /^[A-Za-z0-9_-]{43}$/, "unknown prefixes may be secret");
+  assert.notEqual(agentCredentialSurrogate("sk-x"), agentCredentialSurrogate("sk-x"));
+});
+
+test("Together seal failure is incomplete only for tasks with capture hosts", async () => {
+  for (const captured of [false, true]) {
+    const f = fixture({ guardian: {
+      async prepare() { return {}; }, async attach() {},
+      async seal() { throw new Error("private diagnostic"); },
+    } });
+    const result = await f.environment.execute(captured ? capturedEnvelope() : envelope());
+    assert.equal(result.egressCollections[0].status, "unavailable");
+    assert.deepEqual(result.integrityIssues.map(({ code }) => code),
+      captured ? ["environment.egress-seal-failed"] : [], String(captured));
+  }
+});
+
 test("Together settings validate CPU, per-CPU memory, lifetime, and snapshot names", () => {
   for (const settings of [
     { cpuCount: 0 },
@@ -361,7 +467,8 @@ test('Together composes with the public Suite API, Claude adapter, checks, and c
     async acquire() { return { sandboxId: 'controlled-sandbox' }; },
     async stage(_resource, input) { assert.equal(input.fixtures.length, 1); },
     async run(_resource, { onStdout, environment }) {
-      assert.equal(environment.ANTHROPIC_API_KEY, 'agent-auth-test-value');
+      // The workload holds a surrogate; the host Guardian substitutes the key.
+      assert.match(environment.ANTHROPIC_API_KEY, /^[A-Za-z0-9_-]{43}$/);
       assert.equal(environment.TOGETHER_API_KEY, undefined);
       onStdout(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'controlled-session', result: 'Copied fixture', num_turns: 1, total_cost_usd: 0 }) + '\n');
       return { exitCode: 0, signal: null, timedOut: false, quiescent: true, spawnError: null, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), durationMs: 1 };
@@ -372,7 +479,7 @@ test('Together composes with the public Suite API, Claude adapter, checks, and c
     },
     async dispose() { disposed = true; }, async isDisposed() { return disposed; },
   };
-  const engine = createRunEngine({ resultStore: store, agentAdapter: createClaudeCodeAdapter({ runtimeEnv: { ANTHROPIC_API_KEY: 'agent-auth-test-value' } }), executionEnvironment: createTogetherExecutionEnvironment({ apiKey: 'sandbox-auth-test-value', provider }) });
+  const engine = createRunEngine({ resultStore: store, agentAdapter: createClaudeCodeAdapter({ runtimeEnv: { ANTHROPIC_API_KEY: 'agent-auth-test-value' } }), executionEnvironment: createTogetherExecutionEnvironment({ apiKey: 'sandbox-auth-test-value', provider, guardian: stubGuardian() }) });
   const result = await engine.run({ runPlan: suite.value });
   assert.equal(result.status, 'complete', JSON.stringify(result));
   assert.equal(result.runs[0].verdict, 'pass', JSON.stringify(result));
@@ -413,7 +520,7 @@ test('a Together run cancelled while the Agent runs reports cancellation, not a 
     async collectArtifacts() { return []; },
     async dispose() { disposed = true; }, async isDisposed() { return disposed; },
   };
-  const engine = createRunEngine({ resultStore: store, agentAdapter: createClaudeCodeAdapter({ runtimeEnv: { ANTHROPIC_API_KEY: 'agent-auth-test-value' } }), executionEnvironment: createTogetherExecutionEnvironment({ apiKey: 'sandbox-auth-test-value', provider }) });
+  const engine = createRunEngine({ resultStore: store, agentAdapter: createClaudeCodeAdapter({ runtimeEnv: { ANTHROPIC_API_KEY: 'agent-auth-test-value' } }), executionEnvironment: createTogetherExecutionEnvironment({ apiKey: 'sandbox-auth-test-value', provider, guardian: stubGuardian() }) });
   const result = await engine.run({ runPlan: suite.value, signal: controller.signal });
   const codes = (await store.getRun(result.runs[0].id)).integrityIssues.map(({ code }) => code);
   assert.ok(codes.includes('environment.cancelled'), JSON.stringify(codes));

@@ -10,7 +10,7 @@ const LAUNCH_PATH = `${CONTROL_ROOT}/launch.json`;
 const RUNNER_PATH = `${CONTROL_ROOT}/run.mjs`;
 const ARTIFACT_DECLARATIONS = `${CONTROL_ROOT}/artifacts.json`;
 const ARTIFACT_MANIFEST = `${CONTROL_ROOT}/artifact-manifest.json`;
-const ARTIFACT_ROOT = `${CONTROL_ROOT}/sealed-artifacts`;
+export const ARTIFACT_ROOT = `${CONTROL_ROOT}/sealed-artifacts`;
 const ARTIFACT_HELPER = `${CONTROL_ROOT}/collect-artifacts.py`;
 const WORKSPACE_METADATA_HELPER = `${CONTROL_ROOT}/collect-workspace-metadata.py`;
 const WORKSPACE_METADATA_MANIFEST = `${CONTROL_ROOT}/workspace-metadata.json`;
@@ -336,7 +336,7 @@ PY`, {
   return selected;
 }
 
-function validateArtifactDeclarations(declarations) {
+export function validateArtifactDeclarations(declarations) {
   if (!Array.isArray(declarations) || declarations.length > 32) {
     throw new TypeError("Remote Linux Output Artifact declarations must be a bounded array");
   }

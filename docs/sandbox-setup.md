@@ -139,9 +139,9 @@ definitions; it does not establish sandbox readiness.
 
 New E2B Runtime profiles use a local Result Store at `.hurdle/e2b-results-v1`
 and Viewer port 3000. Each cell uses a workload VM and a Guardian VM, each with
-a five-minute lifetime. Together profiles use `.hurdle/together-results-v1`:
-artifact tasks use one VM with a five-minute lifetime; API tasks use an Agent VM
-and a Guardian VM, each with a ten-minute lifetime. This is a lifetime limit,
+a five-minute lifetime. Together profiles use `.hurdle/together-results-v1`
+and one VM per cell: artifact tasks get a five-minute lifetime and API tasks a
+ten-minute lifetime; the Guardian runs on this machine. This is a lifetime limit,
 not a dollar or token budget. Agent and Together inference may also be billed.
 The Agent runs inside the sandbox, so no local CLI installation is needed.
 Setup checks credentials and image access; model access and remote tools are
@@ -219,7 +219,9 @@ Template recipe: [E2B's SDK workflow](https://docs.e2b.dev/template/quickstart).
 Together sandbox runs the Agent in an ephemeral Linux VM, captures its stdout
 and stderr, and seals declared output artifacts before confirming termination.
 It supports task completion, artifact checks, optional Judge scoring, and trusted
-API traffic capture and request blocking through a separate Guardian VM.
+API traffic capture and request blocking. The egress Guardian runs on the machine
+that runs Hurdle: all of the sandbox's outbound traffic is routed through it, so
+each cell uses a single VM.
 
 [Together sandbox access](https://docs.together.ai/docs/together-code-sandbox)
 must be enabled for your organization. Configure `TOGETHER_API_KEY` and your
@@ -232,7 +234,9 @@ node harness/bin/hurdle.mjs run examples/copy-message/example.suite.mjs --view
 ```
 
 For an installed npm package, use `npx hurdle` in place of
-`node harness/bin/hurdle.mjs`. Setup builds a reusable snapshot containing Node
+`node harness/bin/hurdle.mjs`. Setup installs the Guardian on this machine
+(pinned uv, Python 3.12 and hash-locked mitmproxy, cached under
+`~/.cache/hurdle/guardian`; macOS and Linux on x86-64 or arm64) and builds a reusable snapshot containing Node
 22, Python, Linux controller tools, and the selected pinned Agent CLIs. No local
 Docker installation is needed. Rerunning setup reuses the snapshot alias; like
 E2B templates, Hurdle's snapshots gain an Agent when a Suite needs it and a new
@@ -242,10 +246,10 @@ existing snapshot; setup does not rebuild a missing caller-selected alias.
 Setup saves the existing Project Runtime, preserving its store, Judge, Viewer
 port, and Together resource limits. A new Together Runtime uses one CPU, 2048
 MiB, a five-minute sandbox lifetime for artifact tasks, and `.hurdle/together-results-v1`.
-API tasks use a ten-minute lifetime and a separate Guardian VM. Artifact tasks
-deny all inbound workload application ports; API tasks expose one root-owned,
-per-cell-authenticated relay port. The management Agent port remains authenticated
-by Together and, during API capture, is blocked for the evaluated Linux user. The sandbox-management key is kept in the controller and is not
+API tasks use a ten-minute lifetime. Each workload exposes one root-owned relay
+port that only admits requests carrying both the sandbox token (checked by
+Together's ingress) and a per-cell token. The management Agent port remains
+authenticated by Together and is blocked for the evaluated Linux user. The sandbox-management key is kept in the controller and is not
 injected into the evaluated Agent's environment.
 
 Run the API example with the same setup/run flow:
@@ -256,22 +260,36 @@ node harness/bin/hurdle.mjs run examples/together-api/example.suite.mjs --view
 ```
 
 API setup selects a network-enabled snapshot (`hurdle-claude-code-network@v1` by
-default). It contains the legacy IPv4/IPv6 firewall tools required by Together's
-kernel; caller-owned snapshots must supply those tools. The Guardian reuses the
-E2B proxy for HTTP, HTTPS and WSS metadata, selected response headers, exact
-request blocking and bounded JSON exchange facts. It retains the real target
-credentials and private CA; the workload receives only public trust material and
-surrogate target credentials. A per-cell token protects the Guardian and workload
-relay application ports; Together's management bearer token stays in the controller.
-Together guests cannot reach their preview routes, so the controller connects to
-both ports and forwards opaque frames without logging payloads. The controller
-must retain those connections throughout execution. An end-to-end CONNECT
-preflight runs before the Agent starts; losing the transport makes capture fail.
-Root-owned firewall rules prevent direct connections to resolved capture-host
-addresses in both IP families. The Guardian restricts outgoing traffic to capture
-hosts and DNS. Evidence must drain and pass byte-bound, digest and sequence
-verification before the checks receive it. Capture setup or sealing failures make
-the Run incomplete.
+default). Hurdle's snapshots contain the legacy IPv4/IPv6 firewall tools required
+by Together's kernel; caller-owned snapshots must supply those tools for every task.
+
+The Guardian reuses the E2B proxy. Inside the workload, a root-owned bridge
+accepts every proxied connection; the controller claims each one over an inbound
+WebSocket to the relay port and pipes it into the Guardian on this machine
+without logging payloads. All hosts are TLS-intercepted with a per-cell CA that
+the workload trusts. Capture hosts get the full policy: HTTPS on port 443 only,
+selected response headers, exact request blocking, bounded JSON exchange facts
+and credential substitution. Other hosts, including the Agent's model API and
+package registries, are streamed and recorded as metadata rows (method, host,
+path without query, status, duration) within a separate budget; exhausting it
+drops rows without failing capture. The Guardian retains the real target
+credentials, the Agent's model credentials (`ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`/`OPENAI_API_KEY`,
+`CODEX_ACCESS_TOKEN`) and the private CA; the workload receives only public trust
+material and surrogates. The Guardian swaps each surrogate for its real value
+only in that credential's headers, only over HTTPS to its own provider hosts
+(`api.anthropic.com`, `api.openai.com`, `chatgpt.com`). Together's management bearer token stays in the
+controller.
+
+Keep this machine online while cells run: an end-to-end CONNECT preflight runs
+before the Agent starts, and losing the transport cuts the sandbox's egress and
+makes capture fail. Root-owned firewall rules prevent direct connections to
+resolved capture-host addresses in both IP families. Together does not yet
+support outbound network rules, so traffic that ignores the proxy settings can
+still leave the sandbox directly to other hosts. Evidence must drain and pass
+byte-bound, digest and sequence verification before the checks receive it.
+Capture setup or sealing failures make an API Run incomplete; for artifact-only
+tasks the journal is diagnostic.
 
 For separate Runtime files:
 
@@ -303,7 +321,7 @@ confirmation makes the Run incomplete.
 `run` shows a short status line as the evaluation progresses: Starting Guardian,
 Guardian started, Starting sandbox, Sandbox started, Preparing environment,
 Preparing workspace, Agent running, Collecting results, Stopping sandboxes, and
-Finalizing results. Together artifact-only tasks skip the Guardian stages.
+Finalizing results. Together runs its Guardian on this machine for every task.
 
 Interactive terminals update one line with elapsed time. Plain-text logs retain
 each status transition. With overlapping cells, the line shows the active count,
@@ -316,8 +334,8 @@ transcripts and artifacts for `hurdle view`.
 Hurdle runs up to three evaluation cells concurrently by default. Set Suite
 `concurrency` or pass `run --concurrency N` to change the limit (1–100). E2B
 cells use a workload VM and a Guardian VM each, so three active cells can use
-six VMs. Together API cells also use two VMs each; Together artifact-only cells
-use one. Slots remain occupied through retries, sandbox cleanup, and judging.
+six VMs. Together cells use one VM each, with one local Guardian process per
+active cell; all of their traffic crosses this machine. Slots remain occupied through retries, sandbox cleanup, and judging.
 Provider capacity still applies.
 
 Each Run saves its normalized execution configuration in its immutable

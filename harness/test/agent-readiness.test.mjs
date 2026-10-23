@@ -124,6 +124,7 @@ test("remote readiness diagnoses account failures and blocks unconfigured stores
       probeCli() { assert.fail("Local executable does not establish remote readiness"); },
       checkE2b: async key => { assert.equal(key, "sandbox-key"); return { status: "pass", message: "account accessible" }; },
       checkTogetherSandbox: async key => { assert.equal(key, "sandbox-key"); return { status: "pass", message: "account accessible" }; },
+      findHostGuardian: () => ({}),
       checkPostgres: async value => { assert.equal(value, "postgres-secret"); return mode === "connection"
         ? { status: "fail", message: "connection unavailable" }
         : { status: "warning", code: "postgres.setup-required", message: "schema upgrade required" }; },
@@ -144,6 +145,7 @@ test("Hurdle-built sandbox images must hold the selected Agents and current CLIs
     fetch: async () => success(),
     checkE2b: async () => ({ status: "pass", message: "account accessible" }),
     checkTogetherSandbox: async () => ({ status: "pass", message: "account accessible" }),
+    findHostGuardian: () => ({}),
   };
   const check = async (kind, settings, adapterId) => {
     const checked = await checkAgentReadiness({
@@ -343,4 +345,25 @@ test("readiness symbols use run colors and respect NO_COLOR and redirected outpu
     if (original === undefined) delete process.env.NO_COLOR;
     else process.env.NO_COLOR = original;
   }
+});
+
+test("Together readiness requires the controller-host Guardian except during setup", async () => {
+  const dependencies = (installed) => ({
+    probeCli() { assert.fail("Remote readiness does not probe a local CLI"); },
+    fetch: async () => success(),
+    checkTogetherSandbox: async () => ({ status: "pass", message: "account accessible" }),
+    findHostGuardian: () => installed ? {} : null,
+  });
+  const check = (installed, allowHostGuardianSetup = false) => checkAgentReadiness({
+    ...input({ ANTHROPIC_API_KEY: "key", REMOTE_KEY: "key" }),
+    runtimeProfile: { environment: { kind: "together", apiKeyEnv: "REMOTE_KEY" }, resultStore: { kind: "local" } },
+    allowHostGuardianSetup,
+  }, dependencies(installed));
+  const missing = await check(false);
+  assert.equal(missing.ok, false);
+  const guardian = missing.checks.find(({ code }) => code === "runtime.host-guardian");
+  assert.equal(guardian.status, "fail");
+  assert.match(guardian.message, /--sandbox together/);
+  assert.equal((await check(true)).checks.find(({ code }) => code === "runtime.host-guardian").status, "pass");
+  assert.equal((await check(false, true)).checks.some(({ code }) => code === "runtime.host-guardian"), false);
 });
