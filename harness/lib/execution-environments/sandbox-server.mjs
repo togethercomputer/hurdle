@@ -5,14 +5,14 @@ import net from "node:net";
 import { dirname, resolve } from "node:path";
 
 import {
-  chunks,
-  decodeData,
-  encodeData,
-  FRAME_KIND,
-  isChannel,
+  createStreamClaims,
+  isId,
   MAX_ACTIVE_FLOWS,
-  MAX_BUFFERED_BYTES,
   MAX_FRAME_BYTES,
+  muxOver,
+  readAll,
+  readLines,
+  writeLine,
 } from "./sandbox-socket-protocol.mjs";
 
 // The server inside a Bartender Hurdle sandbox. Bartender starts it and
@@ -56,125 +56,125 @@ export function createSandboxServer({
   const wss = new WebSocket.WebSocketServer({
     noServer: true, perMessageDeflate: false, maxPayload: MAX_FRAME_BYTES,
   });
-  const flows = new Map();
-  const writes = new Map();
+  const flows = new Set();
   let client = null;
+  let session = null;
+  let control = null;
   let used = false;
   let running = false;
-  let nextFlow = 1;
   let heartbeat = null;
 
-  const send = (message) => {
-    if (client?.readyState === WebSocket.OPEN) client.send(JSON.stringify(message));
-  };
-  const sendData = (kind, channel, payload, callback) => {
-    if (client?.readyState !== WebSocket.OPEN) return callback?.(new Error("closed"));
-    client.send(encodeData(kind, channel, payload), { binary: true }, callback);
-  };
+  const send = (message) => { if (control) writeLine(control, message); };
   const fail = (id, error) => send({ op: "error", id, message: String(error?.message ?? error) });
 
-  function closeFlow(id, notify) {
-    const flow = flows.get(id);
-    if (!flow) return;
-    flows.delete(id);
-    flow.socket.destroy();
-    if (notify) send({ op: "flow.close", id });
-  }
-
   // Egress the Agent sends to the loopback relay port leaves only through the
-  // socket. Without a connected controller there is nowhere to send it.
+  // socket, one stream per connection. Without a connected controller there
+  // is nowhere to send it.
   const relay = net.createServer({ allowHalfOpen: false }, (socket) => {
-    if (client?.readyState !== WebSocket.OPEN || flows.size >= MAX_ACTIVE_FLOWS) {
+    if (!session || session.closed || flows.size >= MAX_ACTIVE_FLOWS) {
       socket.destroy();
       return;
     }
-    const id = nextFlow++;
-    flows.set(id, { socket });
-    send({ op: "flow.open", id });
-    socket.on("data", (chunk) => {
-      sendData(FRAME_KIND.flow, id, chunk, () => {
-        if (socket.isPaused() && client && client.bufferedAmount <= MAX_BUFFERED_BYTES / 2) socket.resume();
-      });
-      if (client && client.bufferedAmount > MAX_BUFFERED_BYTES) socket.pause();
-    });
-    socket.on("error", () => closeFlow(id, true));
-    socket.on("close", () => closeFlow(id, true));
+    const stream = session.open();
+    flows.add(socket);
+    const teardown = () => { flows.delete(socket); socket.destroy(); stream.destroy(); };
+    socket.on("error", teardown);
+    stream.on("error", teardown);
+    socket.once("close", teardown);
+    socket.pipe(stream);
+    stream.pipe(socket);
   });
 
-  async function handleRun(id, job) {
+  async function handleRun(id, job, claims, message) {
     if (running) return fail(id, "a task step is already running");
+    if (!isId(message.stdout) || !isId(message.stderr)) return fail(id, "run names no output streams");
     running = true;
+    const [stdout, stderr] = await Promise.all([claims.claim(message.stdout), claims.claim(message.stderr)]);
+    for (const stream of [stdout, stderr]) stream.on("error", () => {});
     try {
       const value = await runTask(job, {
-        onStdout: (text) => sendData(FRAME_KIND.stdout, id, Buffer.from(text)),
-        onStderr: (text) => sendData(FRAME_KIND.stderr, id, Buffer.from(text)),
+        onStdout: (text) => stdout.write(Buffer.from(text)),
+        onStderr: (text) => stderr.write(Buffer.from(text)),
       });
       send({ op: "done", id, value: value ?? null });
     } catch (error) {
       fail(id, error);
     } finally {
       running = false;
+      stdout.end();
+      stderr.end();
     }
   }
 
-  async function handleRead(id, path) {
+  async function handleRead(id, path, claims, message) {
     if (!within(path, readRoots)) return fail(id, "read outside the sealed roots");
+    if (!isId(message.stream)) return fail(id, "read names no stream");
+    const stream = await claims.claim(message.stream);
+    stream.on("error", () => {});
     try {
       const bytes = await readFile(path);
-      for (const chunk of chunks(bytes)) sendData(FRAME_KIND.read, id, chunk);
+      await new Promise((done) => stream.end(bytes, done));
+      send({ op: "done", id, value: { bytes: bytes.length } });
+    } catch (error) {
+      stream.destroy();
+      fail(id, error);
+    }
+  }
+
+  async function handleWrite(id, path, claims, message) {
+    if (!within(path, writeRoots)) return fail(id, "write outside the task root");
+    if (!isId(message.stream)) return fail(id, "write names no stream");
+    const stream = await claims.claim(message.stream);
+    try {
+      const bytes = await readAll(stream, MAX_WRITE_BYTES);
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      const temporary = `${path}.${id}.tmp`;
+      await writeFile(temporary, bytes, { mode: 0o600 });
+      await rename(temporary, path);
       send({ op: "done", id, value: { bytes: bytes.length } });
     } catch (error) {
       fail(id, error);
     }
   }
 
-  async function finishWrite(id) {
-    const write = writes.get(id);
-    writes.delete(id);
-    if (!write) return fail(id, "unknown write");
-    try {
-      await mkdir(dirname(write.path), { recursive: true, mode: 0o700 });
-      const temporary = `${write.path}.${id}.tmp`;
-      await writeFile(temporary, Buffer.concat(write.parts), { mode: 0o600 });
-      await rename(temporary, write.path);
-      send({ op: "done", id, value: { bytes: write.size } });
-    } catch (error) {
-      fail(id, error);
-    }
-  }
-
-  function onControl(message) {
+  function onControl(message, claims) {
     const { op, id } = message;
-    if (op === "flow.close") return closeFlow(id, false);
-    if (!isChannel(id)) return;
-    if (op === "run") return handleRun(id, message.job);
-    if (op === "read") return handleRead(id, message.path);
-    if (op === "write") {
-      if (!within(message.path, writeRoots)) return fail(id, "write outside the task root");
-      writes.set(id, { path: message.path, parts: [], size: 0 });
-      return;
-    }
-    if (op === "end") return finishWrite(id);
+    if (!isId(id)) return;
+    const handle = (promise) => promise.catch((error) => fail(id, error));
+    if (op === "run") return handle(handleRun(id, message.job, claims, message));
+    if (op === "read") return handle(handleRead(id, message.path, claims, message));
+    if (op === "write") return handle(handleWrite(id, message.path, claims, message));
     fail(id, "unknown operation");
   }
 
-  function onData(frame) {
-    const { kind, channel, payload } = decodeData(frame);
-    if (kind === FRAME_KIND.flow) {
-      // The shared socket cannot pause one flow; the TCP socket buffers it.
-      flows.get(channel)?.socket.write(payload);
-      return;
-    }
-    if (kind === FRAME_KIND.write) {
-      const write = writes.get(channel);
-      if (!write) return;
-      write.size += payload.length;
-      if (write.size > MAX_WRITE_BYTES) {
-        writes.delete(channel);
-        return fail(channel, "write exceeded its byte bound");
-      }
-      write.parts.push(Buffer.from(payload));
-    }
+  function attach(websocket) {
+    client = websocket;
+    const claims = createStreamClaims();
+    session = muxOver(websocket, {
+      client: false,
+      onStream: (stream) => {
+        // The controller's first stream is the control channel; the rest are
+        // claimed by the ops that name them.
+        if (!control) {
+          control = stream;
+          control.on("error", () => {});
+          readLines(control, (message) => onControl(message, claims), () => websocket.terminate());
+          return;
+        }
+        claims.offer(stream);
+      },
+    });
+    heartbeat = setInterval(() => websocket.ping(), PING_INTERVAL_MS).unref();
+    websocket.once("close", () => {
+      clearInterval(heartbeat);
+      claims.discard();
+      for (const socket of [...flows]) socket.destroy();
+      session.close();
+      client = null;
+      session = null;
+      control = null;
+      onClosed();
+    });
   }
 
   server.on("upgrade", (request, socket, head) => {
@@ -188,24 +188,7 @@ export function createSandboxServer({
     used = true;
     mkdir(dirname(caPath), { recursive: true, mode: 0o700 })
       .then(() => writeFile(caPath, certificate, { mode: 0o644 }))
-      .then(() => wss.handleUpgrade(request, socket, head, (websocket) => {
-        client = websocket;
-        heartbeat = setInterval(() => websocket.ping(), PING_INTERVAL_MS).unref();
-        websocket.on("message", (data, isBinary) => {
-          try {
-            if (isBinary) onData(data);
-            else onControl(JSON.parse(data.toString("utf8")));
-          } catch {
-            websocket.terminate();
-          }
-        });
-        websocket.once("close", () => {
-          clearInterval(heartbeat);
-          for (const id of [...flows.keys()]) closeFlow(id, false);
-          client = null;
-          onClosed();
-        });
-      }))
+      .then(() => wss.handleUpgrade(request, socket, head, attach))
       .catch(() => reject(500));
   });
   server.on("clientError", (_error, socket) => socket.destroy());
@@ -224,7 +207,7 @@ export function createSandboxServer({
     },
     async close() {
       client?.terminate();
-      for (const id of [...flows.keys()]) closeFlow(id, false);
+      for (const socket of [...flows]) socket.destroy();
       await Promise.all([
         new Promise((done) => server.close(() => done())),
         new Promise((done) => relay.close(() => done())),

@@ -10,12 +10,11 @@ import {
 } from "./linux-sandbox-operations.mjs";
 import { TASK_ROOT } from "./sandbox-server.mjs";
 import {
-  chunks,
-  decodeData,
-  encodeData,
-  FRAME_KIND,
-  MAX_BUFFERED_BYTES,
   MAX_FRAME_BYTES,
+  muxOver,
+  readAll,
+  readLines,
+  writeLine,
 } from "./sandbox-socket-protocol.mjs";
 
 // Bartender's Hurdle API hands the controller one WebSocket to a fresh sandbox
@@ -25,6 +24,8 @@ import {
 // flows ride it to the Guardian. Closing it terminates the sandbox.
 
 const STEP_TIMEOUT_MS = 10 * 60_000;
+// Sealed artifacts are bounded in the sandbox; this is the transport's backstop.
+const MAX_READ_BYTES = 256 * 1024 * 1024;
 // Sealing and process cleanup after the Agent's own deadline.
 const AGENT_GRACE_MS = 2 * 60_000;
 
@@ -82,72 +83,64 @@ function connect(url, apiKey, caCertificate, signal) {
   });
 }
 
+// Text output arrives in arbitrary chunks; a decoder keeps a split character
+// whole across them.
+function textSink(callback) {
+  const decoder = new TextDecoder("utf-8");
+  return {
+    write: (chunk) => { const text = decoder.decode(chunk, { stream: true }); if (text) callback?.(text); },
+    end: () => { const text = decoder.decode(); if (text) callback?.(text); },
+  };
+}
+
 function createSocketResource(socket) {
   const pending = new Map();
-  const flows = new Map();
+  const flows = new Set();
   let nextId = 1;
   let openUpstream = null;
   let failure = null;
   let closed = false;
 
-  const send = (message) => socket.send(JSON.stringify(message));
-  const sendData = (kind, channel, payload, callback) =>
-    socket.send(encodeData(kind, channel, payload), { binary: true }, callback);
-
-  function closeFlow(id, notify) {
-    const tcp = flows.get(id);
-    if (!tcp) return;
-    flows.delete(id);
-    tcp.destroy();
-    if (notify && !closed) send({ op: "flow.close", id });
-  }
-
-  function openFlow(id) {
-    if (!openUpstream) return send({ op: "flow.close", id });
-    let tcp;
-    try { tcp = openUpstream(); } catch { return send({ op: "flow.close", id }); }
-    flows.set(id, tcp);
-    tcp.on("data", (chunk) => {
-      sendData(FRAME_KIND.flow, id, chunk, () => {
-        if (tcp.isPaused() && socket.bufferedAmount <= MAX_BUFFERED_BYTES / 2) tcp.resume();
-      });
-      if (socket.bufferedAmount > MAX_BUFFERED_BYTES) tcp.pause();
-    });
-    tcp.on("error", () => closeFlow(id, true));
-    tcp.on("close", () => closeFlow(id, true));
-  }
-
-  socket.on("message", (data, isBinary) => {
-    if (isBinary) {
-      const { kind, channel, payload } = decodeData(data);
-      if (kind === FRAME_KIND.flow) return flows.get(channel)?.write(payload);
-      const request = pending.get(channel);
-      if (kind === FRAME_KIND.read) request?.parts.push(Buffer.from(payload));
-      else if (kind === FRAME_KIND.stdout) request?.onStdout?.(payload.toString("utf8"));
-      else if (kind === FRAME_KIND.stderr) request?.onStderr?.(payload.toString("utf8"));
-      return;
-    }
-    const message = JSON.parse(data.toString("utf8"));
-    if (message.op === "flow.open") return openFlow(message.id);
-    if (message.op === "flow.close") return closeFlow(message.id, false);
+  // Every stream the server opens is one of the Agent's egress connections.
+  const session = muxOver(socket, {
+    client: true,
+    onStream: (stream) => {
+      let tcp;
+      try { tcp = openUpstream?.(); } catch { tcp = null; }
+      if (!tcp) return stream.destroy();
+      flows.add(tcp);
+      const teardown = () => { flows.delete(tcp); tcp.destroy(); stream.destroy(); };
+      tcp.on("error", teardown);
+      stream.on("error", teardown);
+      tcp.once("close", teardown);
+      stream.pipe(tcp);
+      tcp.pipe(stream);
+    },
+  });
+  const control = session.open();
+  control.on("error", () => {});
+  readLines(control, (message) => {
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
-    if (message.op === "done") request.resolve({ value: message.value, parts: request.parts });
+    if (message.op === "done") request.resolve(message.value);
     else request.reject(new Error(message.message ?? "Together sandbox operation failed"));
-  });
+  }, () => socket.terminate());
+
   socket.once("close", () => {
     closed = true;
     failure ||= new Error("Together sandbox connection closed");
     for (const request of pending.values()) request.reject(failure);
     pending.clear();
-    for (const id of [...flows.keys()]) closeFlow(id, false);
+    for (const tcp of [...flows]) tcp.destroy();
+    session.close();
   });
   socket.on("error", (error) => { failure ||= error; });
 
   // Each operation either completes or ends the sandbox: a step that cannot be
-  // waited for is not left running in it.
-  function request(message, { signal, timeoutMs = STEP_TIMEOUT_MS, onStdout, onStderr, body } = {}) {
+  // waited for is not left running in it. `streams` names the streams the op
+  // uses, opened here before the op is sent so their SYNs precede it.
+  function request(message, streams = {}, { signal, timeoutMs = STEP_TIMEOUT_MS } = {}) {
     if (closed) return Promise.reject(failure);
     if (signal?.aborted) return Promise.reject(abortError());
     const id = nextId++;
@@ -159,31 +152,42 @@ function createSocketResource(socket) {
         signal?.removeEventListener("abort", onAbort);
         callback(value);
       };
-      pending.set(id, { parts: [], onStdout, onStderr, resolve: done(resolve), reject: done(reject) });
+      pending.set(id, { resolve: done(resolve), reject: done(reject) });
       timer = setTimeout(() => {
         resource.close();
         reject(Object.assign(new Error("Together sandbox operation timed out"), { name: "TimeoutError" }));
       }, timeoutMs);
       signal?.addEventListener("abort", onAbort, { once: true });
-      send({ ...message, id });
-      if (body) {
-        for (const chunk of chunks(body)) sendData(FRAME_KIND.write, id, chunk);
-        send({ op: "end", id });
-      }
+      const named = Object.fromEntries(Object.entries(streams).map(([name, stream]) => [name, stream.id]));
+      writeLine(control, { ...message, ...named, id });
     });
   }
 
   const resource = {
     sandboxId: randomUUID(),
     async write(path, bytes, options) {
-      await request({ op: "write", path }, { ...options, body: Buffer.from(bytes) });
+      const stream = session.open();
+      stream.on("error", () => {});
+      stream.end(Buffer.from(bytes));
+      await request({ op: "write", path }, { stream }, options);
     },
     async read(path, options) {
-      const { parts } = await request({ op: "read", path }, options);
-      return Buffer.concat(parts);
+      const stream = session.open();
+      const bytes = readAll(stream, MAX_READ_BYTES);
+      bytes.catch(() => {});
+      await request({ op: "read", path }, { stream }, options);
+      return bytes;
     },
-    async step(job, options) {
-      return (await request({ op: "run", job }, options)).value;
+    async step(job, { onStdout, onStderr, ...options } = {}) {
+      const stdout = session.open();
+      const stderr = session.open();
+      for (const [stream, callback] of [[stdout, onStdout], [stderr, onStderr]]) {
+        const sink = textSink(callback);
+        stream.on("data", sink.write);
+        stream.once("end", sink.end);
+        stream.on("error", () => {});
+      }
+      return request({ op: "run", job }, { stdout, stderr }, options);
     },
     async attachEgress({ hosts, openUpstream: upstream, signal }) {
       openUpstream = upstream;

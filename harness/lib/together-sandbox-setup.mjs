@@ -71,6 +71,7 @@ export const BARTENDER_CONTEXT_FILES = Object.freeze([
   "lib/execution-environments/sandbox-socket-protocol.mjs",
   "lib/execution-environments/sandbox-task.mjs",
   "lib/execution-environments/together-workload-egress.mjs",
+  "lib/execution-environments/yamux.mjs",
   "verify/proxy/agent-node-runtime/package-lock.json",
   "verify/proxy/agent-node-runtime/package.json",
   "verify/proxy/generic_guardian.py",

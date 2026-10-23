@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
+import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -202,6 +203,71 @@ test("egress flows ride the socket to the Guardian", async (t) => {
   });
   assert.ok(echoed.equals(payload));
   resource.assertEgressHealthy();
+});
+
+test("a flow nobody reads holds back only its own sender, and other flows keep moving", async (t) => {
+  // A Guardian that answers the first connection but never reads from it.
+  let stalled = null;
+  const guardian = net.createServer((socket) => {
+    if (!stalled) { stalled = socket; socket.pause(); return; }
+    socket.pipe(socket);
+  });
+  await new Promise((ready) => guardian.listen(0, "127.0.0.1", ready));
+  t.after(() => guardian.close());
+  const h = await harness(t);
+  const resource = await acquire(h.provider);
+  t.after(() => resource.close());
+  await resource.attachEgress({
+    hosts: ["api.anthropic.com"],
+    openUpstream: () => net.connect({ host: "127.0.0.1", port: guardian.address().port }),
+  });
+  const blocked = net.connect({ host: "127.0.0.1", port: h.flowPort });
+  await new Promise((ready) => blocked.once("connect", ready));
+  let written = 0;
+  const feed = () => { while (written < 8 * 1024 * 1024 && blocked.write(Buffer.alloc(64 * 1024, 1))) written += 64 * 1024; };
+  blocked.on("drain", feed);
+  feed();
+  await new Promise((wait) => setTimeout(wait, 200));
+  assert.ok(written < 8 * 1024 * 1024, "the stalled flow's sender stopped");
+  const echoed = await new Promise((resolve, reject) => {
+    const agent = net.connect({ host: "127.0.0.1", port: h.flowPort });
+    agent.once("data", (chunk) => { agent.destroy(); resolve(chunk.toString()); });
+    agent.on("error", reject);
+    agent.write("still flowing");
+  });
+  assert.equal(echoed, "still flowing");
+  blocked.destroy();
+});
+
+test("the session survives a relay that tears frames across WebSocket messages", async (t) => {
+  // A relay between controller and server that forwards every message in
+  // 7-byte pieces, so no yamux frame arrives whole.
+  const h = await harness(t);
+  const relay = http.createServer((_request, response) => { response.writeHead(404); response.end(); });
+  const WebSocket = createRequire(import.meta.url)("ws");
+  const wss = new WebSocket.WebSocketServer({ noServer: true, perMessageDeflate: false });
+  relay.on("upgrade", (request, socket, head) => {
+    const upstream = new WebSocket(`ws://127.0.0.1:${h.port}/`, { headers: { "x-sandbox-ca": request.headers["x-sandbox-ca"] }, perMessageDeflate: false });
+    const torn = (from, to) => from.on("message", (data) => {
+      for (let offset = 0; offset < data.length; offset += 7) to.send(data.subarray(offset, offset + 7), { binary: true });
+    });
+    upstream.once("open", () => wss.handleUpgrade(request, socket, head, (client) => {
+      torn(client, upstream);
+      torn(upstream, client);
+      client.once("close", () => upstream.terminate());
+      upstream.once("close", () => client.terminate());
+    }));
+  });
+  await new Promise((ready) => relay.listen(0, "127.0.0.1", ready));
+  t.after(() => relay.close());
+  const provider = createTogetherSocketProvider({
+    runUrl: () => `ws://127.0.0.1:${relay.address().port}/`, taskRoot: h.taskRoot, artifactRoot: h.artifactRoot,
+  });
+  const resource = await acquire(provider);
+  t.after(() => resource.close());
+  const bytes = Buffer.alloc(300 * 1024, 9);
+  await resource.write(join(h.taskRoot, "torn.bin"), bytes);
+  assert.ok((await readFile(join(h.taskRoot, "torn.bin"))).equals(bytes));
 });
 
 test("disposing closes the connection, which ends the sandbox server's session", async (t) => {
