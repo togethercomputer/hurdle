@@ -167,7 +167,9 @@ replacement of the legacy runner.
 
 Together execution can use filesystem or Postgres storage through the same
 Runtime API. Run `hurdle setup --sandbox together --yes` for an artifact-only
-Suite, or initialize `together` / `together-postgres` with `--snapshot ALIAS`.
+Suite, or initialize `together` / `together-postgres`; nothing is built, since
+runs use Together's own Hurdle image. Add `--snapshot ALIAS` to run a
+caller-owned snapshot on the Together sandbox API instead.
 Read [Together sandbox setup and limitations](./sandbox-setup.md#together-sandbox)
 before use. Together runs the egress Guardian on the controller machine, routing
 all sandbox traffic through it, for the same trusted capture, request blocking

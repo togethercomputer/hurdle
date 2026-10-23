@@ -65,9 +65,13 @@ async function fixture(t, example = "copy-message") {
     runtimePath: join(root, ".hurdle/runtime/default.json"),
   };
 }
-test("setup --sandbox together builds an agent snapshot, and validate discovers its private Runtime", async (t) => {
+test("setup --sandbox together selects Together's Hurdle image without a build, and validate discovers its private Runtime", async (t) => {
   const f = await fixture(t);
-  const cli = createFrameworkCli({ ...f.dependencies, loadSetupBackend() { assert.fail("Together setup must not use E2B"); } });
+  const cli = createFrameworkCli({
+    ...f.dependencies,
+    loadSetupBackend() { assert.fail("Together setup must not use E2B"); },
+    loadTogetherSetupBackend() { assert.fail("no snapshot is needed"); },
+  });
   assert.equal(
     await cli.main(["setup", "--sandbox", "together", "--yes", "--json"], f.io),
     0,
@@ -77,12 +81,9 @@ test("setup --sandbox together builds an agent snapshot, and validate discovers 
   assert.equal(report.executionEnvironment, "together");
   assert.equal(report.target, "together");
   assert.ok(report.checks.some(check => check.status === "pass" && check.message === "Setup complete · Together sandbox configured."));
-  assert.deepEqual(f.calls[1].slice(0, 3), [
-    "build",
-    "hurdle-claude-code@v1",
-    ["claude-code"],
-  ]);
+  assert.ok(report.checks.some(check => check.message === "Together's Hurdle image selected; nothing to build."));
   const config = JSON.parse(await readFile(f.runtimePath, "utf8"));
+  assert.equal(config.environment.settings.snapshotAlias, undefined);
   assert.equal(config.environment.settings.maxLifetimeMs, 300000);
   assert.equal(config.resultStore.root, "../together-results-v1");
   assert.equal(config.judge, undefined);
@@ -127,10 +128,20 @@ test("Together setup preserves an existing store, Judge and limits while reusing
   assert.equal(saved.viewer.port, 3022);
   assert.match(f.output(), /✓ Setup complete · Together sandbox configured\./);
 });
-test("Together setup adds a new Agent to Hurdle's snapshot instead of reusing one without its CLI", async (t) => {
+// A project that built a Hurdle snapshot before keeps using the sandbox API.
+async function savedSnapshot(f, snapshotAlias) {
+  await mkdir(join(f.root, ".hurdle/runtime"), { recursive: true });
+  await writeFile(f.runtimePath, JSON.stringify({
+    schemaVersion: 1,
+    environment: { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: { snapshotAlias, maxLifetimeMs: 300000 } },
+    resultStore: { kind: "local", root: "../together-results-v1" },
+  }));
+}
+
+test("Together setup adds a new Agent to a project's Hurdle snapshot instead of reusing one without its CLI", async (t) => {
   const f = await fixture(t);
   f.dependencies.env.OPENAI_API_KEY = "test-openai-secret";
-  const available = new Set();
+  const available = new Set(["hurdle-claude-code@v1"]);
   const builds = [];
   const cli = createFrameworkCli({
     ...f.dependencies,
@@ -143,8 +154,10 @@ test("Together setup adds a new Agent to Hurdle's snapshot instead of reusing on
     }),
   });
   const savedAlias = async () => JSON.parse(await readFile(f.runtimePath, "utf8")).environment.settings.snapshotAlias;
+  await savedSnapshot(f, "hurdle-claude-code@v1");
   assert.equal(await cli.main(["setup", "--sandbox", "together", "--yes"], f.io), 0, f.output());
   assert.equal(await savedAlias(), "hurdle-claude-code@v1");
+  assert.equal(builds.length, 0);
 
   assert.equal((await initializeSuite({ destination: join(f.root, "codex"), agent: "codex" })).ok, true);
   assert.equal(
@@ -167,23 +180,25 @@ test("Together setup adds a new Agent to Hurdle's snapshot instead of reusing on
     f.output(),
   );
   assert.equal(await savedAlias(), "hurdle-claude-code-codex@v2");
-  assert.equal(builds.length, 3);
+  assert.equal(builds.length, 2);
 });
 
-test("Together API setup builds a network snapshot and configures a longer Guardian lifetime", async (t) => {
+test("Together API setup configures a longer Guardian lifetime, and a project's snapshot gains network tools", async (t) => {
   const f = await fixture(t, "together-api");
-  const cli = createFrameworkCli({
-    ...f.dependencies,
-  });
+  const cli = createFrameworkCli(f.dependencies);
   assert.equal(
     await cli.main(["setup", "--sandbox", "together", "--yes"], f.io),
     0,
     f.output(),
   );
-  assert.equal(f.calls[1][1], "hurdle-claude-code-network@v1");
+  assert.deepEqual(f.calls, []);
   const config = JSON.parse(await readFile(f.runtimePath, "utf8"));
   assert.equal(config.environment.settings.maxLifetimeMs, 600000);
   assert.match(f.output(), /All sandbox traffic routes through this machine/);
+
+  await savedSnapshot(f, "hurdle-claude-code@v1");
+  assert.equal(await cli.main(["setup", "--sandbox", "together", "--yes"], f.io), 0, f.output());
+  assert.equal(f.calls[1][1], "hurdle-claude-code-network@v1");
 });
 test("Together setup gives a later API Suite ten minutes but keeps a configured limit", async (t) => {
   const f = await fixture(t);
@@ -206,18 +221,23 @@ test("Together setup gives a later API Suite ten minutes but keeps a configured 
 });
 
 test("Together setup declines unapproved builds and missing caller-selected snapshots", async (t) => {
-  for (const flags of [[], ["--snapshot", "missing@v1", "--yes"]]) {
-    const f = await fixture(t);
-    assert.equal(
-      await createFrameworkCli(f.dependencies).main(
-        ["setup", "--sandbox", "together", ...flags],
-        f.io,
-      ),
-      1,
-    );
-    assert.ok(!f.calls.some((call) => Array.isArray(call)));
-    assert.equal(existsSync(f.runtimePath), false);
-  }
+  const unapproved = await fixture(t);
+  await savedSnapshot(unapproved, "hurdle-claude-code@v1");
+  const before = await readFile(unapproved.runtimePath, "utf8");
+  assert.equal(await createFrameworkCli(unapproved.dependencies).main(["setup", "--sandbox", "together"], unapproved.io), 1);
+  assert.ok(!unapproved.calls.some((call) => Array.isArray(call)));
+  assert.equal(await readFile(unapproved.runtimePath, "utf8"), before);
+
+  const missing = await fixture(t);
+  assert.equal(
+    await createFrameworkCli(missing.dependencies).main(
+      ["setup", "--sandbox", "together", "--snapshot", "missing@v1", "--yes"],
+      missing.io,
+    ),
+    1,
+  );
+  assert.ok(!missing.calls.some((call) => Array.isArray(call)));
+  assert.equal(existsSync(missing.runtimePath), false);
 });
 test("Together Dockerfile includes pinned agents and Linux controller dependencies", () => {
   const text = togetherSandboxDockerfile([

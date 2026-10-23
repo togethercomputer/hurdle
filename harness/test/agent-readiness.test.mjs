@@ -172,14 +172,14 @@ test("Hurdle-built sandbox images must hold the selected Agents and current CLIs
   assert.equal(checked.image[0].code, "runtime.image-outdated");
   assert.match(checked.image[0].message, /Together snapshot .* --sandbox together` to build hurdle-claude-code-codex-network@v2/);
 
-  // The default Together snapshot holds only Claude Code.
-  assert.equal((await check("together", undefined, "codex")).image[0].code, "runtime.image-agent-missing");
+  // Without an alias, Together's own Hurdle image is Together's to keep current.
   for (const [kind, settings, adapterId] of [
     ["e2b", { workloadTemplate: "hurdle-codex:v2" }, "codex"],
     ["e2b", { workloadTemplate: "hurdle-claude-code:v1" }, "claude-code"],
     ["e2b", { workloadTemplate: "my-codex-template:v1" }, "codex"],
     ["e2b", {}, "codex"],
     ["together", undefined, "claude-code"],
+    ["together", undefined, "codex"],
     ["together", { snapshotAlias: "my-snapshot@v1" }, "codex"],
   ]) {
     checked = await check(kind, settings, adapterId);

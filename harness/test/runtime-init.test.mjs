@@ -23,6 +23,19 @@ test("runtime init creates the three supported backend combinations", () => {
   assert.equal(combined.resultStore.kind, "postgres");
 });
 
+test("Together runtime init uses Together's Hurdle image unless a snapshot is named", () => {
+  const image = createRuntimeConfig("together");
+  assert.equal(image.environment.kind, "together");
+  assert.deepEqual(image.environment.settings, { maxLifetimeMs: 3_600_000 });
+  assert.equal(image.resultStore.root, "../together-results-v1");
+
+  const snapshot = createRuntimeConfig("together-postgres", { snapshot: "mine@v1" });
+  assert.equal(snapshot.environment.settings.snapshotAlias, "mine@v1");
+  assert.equal(snapshot.environment.settings.cpuCount, 1);
+  assert.equal(snapshot.resultStore.kind, "postgres");
+  assert.throws(() => createRuntimeConfig("together", { snapshot: " " }), /must not be empty/);
+});
+
 test("E2B runtime init requires the caller's template", () => {
   assert.throws(
     () => createRuntimeConfig("e2b"),

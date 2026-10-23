@@ -694,10 +694,16 @@ function runtimeInfoRows(runtime, cwd) {
   const { settings } = environment;
   const rows = runtimeSummaryRows(runtime, cwd);
   if (environment.kind !== "local") {
-    rows.push(environment.kind === "together" ? ["Snapshot", settings.snapshotAlias] : ["Template", settings.workloadTemplate]);
+    const togetherImage = environment.kind === "together" && !settings.snapshotAlias;
+    rows.push(environment.kind === "together"
+      ? ["Snapshot", settings.snapshotAlias ?? "Together's Hurdle image"]
+      : ["Template", settings.workloadTemplate]);
     if (environment.kind === "e2b") rows.push(["Guardian", settings.guardianTemplate]);
     const lifetime = settings.maxLifetimeMs % 60_000 === 0 ? `${settings.maxLifetimeMs / 60_000}m` : `${settings.maxLifetimeMs / 1000}s`;
-    rows.push(["Limits", `${settings.cpuCount} ${plural(settings.cpuCount, "CPU")} · ${settings.memoryMiB} MiB · ${lifetime} max`]);
+    // Together sizes its own image; CPU and memory settings apply to caller-owned snapshots.
+    rows.push(["Limits", togetherImage
+      ? `${lifetime} max`
+      : `${settings.cpuCount} ${plural(settings.cpuCount, "CPU")} · ${settings.memoryMiB} MiB · ${lifetime} max`]);
   }
   if (resultStore.kind === "postgres") {
     rows.push(["Database", `${resultStore.databaseUrlEnv} (environment variable)`], ["Artifacts", displayPath(resultStore.artifactRoot)]);

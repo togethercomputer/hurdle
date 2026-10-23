@@ -19,7 +19,10 @@ export class BackendDependencyError extends Error {
 // Check installation only: never allocate a sandbox or connect to a database.
 export function assertRuntimeDependencies({ environment }) {
   if (environment?.kind === "together") {
-    try { require.resolve("together-sandbox"); require.resolve("ws"); }
+    // The sandbox SDK serves caller-owned snapshots only; the Hurdle socket
+    // needs just the WebSocket client.
+    const needed = environment.settings?.snapshotAlias ? ["together-sandbox", "ws"] : ["ws"];
+    try { for (const name of needed) require.resolve(name); }
     catch (error) {
       if (error?.code !== "MODULE_NOT_FOUND") throw error;
       throw new BackendDependencyError("Together sandbox");

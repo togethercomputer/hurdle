@@ -1,4 +1,4 @@
-import { togetherApiUrl, togetherUsesRunSocket } from "./together-api-url.mjs";
+import { togetherApiUrl } from "./together-api-url.mjs";
 import { normalizePostgresConnectionString, postgresConnectionFailure } from "./postgres-connection-string.mjs";
 import { backendDependencyInstallCommand } from "./backend-dependencies.mjs";
 import { hurdleEnvironmentValue, RESULT_STORE_DATABASE_URL_ENV } from "./hurdle-environment.mjs";
@@ -196,11 +196,11 @@ export async function runCredentialPreflight(environment, dependencies = {}) {
 }
 
 // Read-only access check; never allocate a VM or retain provider response data.
-export async function checkTogetherSandboxCredential(apiKey, { loadSdk = () => import('together-sandbox'), env = process.env } = {}) {
+// A Runtime without a snapshot alias never touches the sandbox API: Together's
+// Hurdle API refuses a bad key when the run connects.
+export async function checkTogetherSandboxCredential(apiKey, { loadSdk = () => import('together-sandbox'), snapshotAlias = null } = {}) {
   if (typeof apiKey !== 'string' || !apiKey.trim()) return { status: 'fail', message: 'sandbox API key is missing' };
-  // Bartender's Hurdle API runs without the sandbox API; it refuses a bad key
-  // when the run connects.
-  if (togetherUsesRunSocket(env)) return { status: 'skip', message: 'key is checked when the run connects' };
+  if (!snapshotAlias) return { status: 'skip', message: 'key is checked when the run connects' };
   try {
     const { TogetherSandbox } = await loadSdk();
     const sdk = new TogetherSandbox({ apiKey, baseUrl: togetherApiUrl(), retry: { maxAttempts: 1 } });

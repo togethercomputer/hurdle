@@ -5,14 +5,13 @@ export function togetherUsesLocalControlPlane(env = process.env) {
   return Boolean(env.HURDLE_TOGETHER_API_URL?.trim());
 }
 
-// Bartender's Hurdle API: one WebSocket per sandbox. HURDLE_TOGETHER_RUN_URL
-// selects it in place of the sandbox API.
-export function togetherUsesRunSocket(env = process.env) {
-  return Boolean(env.HURDLE_TOGETHER_RUN_URL?.trim());
-}
+// Together's Hurdle API: one WebSocket per sandbox, booted from Together's own
+// Hurdle image. The default for a Together Runtime without a snapshot alias;
+// HURDLE_TOGETHER_RUN_URL points it at another control plane.
+export const DEFAULT_TOGETHER_RUN_URL = "wss://api.together.ai/v1/compute/experimental/run";
 
 export function togetherRunUrl(env = process.env) {
-  const url = new URL(env.HURDLE_TOGETHER_RUN_URL?.trim() ?? "");
+  const url = new URL(env.HURDLE_TOGETHER_RUN_URL?.trim() || DEFAULT_TOGETHER_RUN_URL);
   if (!["wss:", "ws:"].includes(url.protocol) || url.username || url.password || url.hash) {
     throw new Error("HURDLE_TOGETHER_RUN_URL must be a ws(s) URL");
   }

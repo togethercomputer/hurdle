@@ -188,9 +188,6 @@ export async function setupTogetherSandbox(
           ].includes(requirement),
         ),
       );
-    dependencies.assertRuntimeDependencies({
-      environment: { kind: "together" },
-    });
     const runtimePath = projectRuntimePath(io.cwd) ?? DEFAULT_PROJECT_RUNTIME;
     const previous = await regularFileContents(resolve(io.cwd, runtimePath));
     if (previous !== null) resolveRuntimeProfile({ cwd: io.cwd, runtimePath });
@@ -206,14 +203,19 @@ export async function setupTogetherSandbox(
         ? config.environment.settings?.snapshotAlias
         : null;
     const managed = saved ? managedImageAgents(saved, "together") : null;
-    // A Hurdle snapshot must hold every Agent CLI the project runs, and keeps
-    // network tools once capture needs them; caller-owned snapshots stay.
+    // Without an alias, runs use Together's own Hurdle image over its socket
+    // and nothing is built. A project that already built a Hurdle snapshot
+    // keeps it: it must hold every Agent CLI the project runs, and keeps
+    // network tools once capture needs them. Caller-owned snapshots stay.
     const agents = [...new Set([...(managed?.agents ?? []), ...ids])].sort();
     const alias =
       snapshot ??
-      (saved && !managed
-        ? saved
-        : managedImageName(agents, "together", { network: needsCapture || managed?.network }));
+      (managed
+        ? managedImageName(agents, "together", { network: needsCapture || managed.network })
+        : saved ?? null);
+    dependencies.assertRuntimeDependencies({
+      environment: { kind: "together", settings: { snapshotAlias: alias } },
+    });
     const settings = normalizeTogetherSettings({
       ...(config.environment?.kind === "together"
         ? config.environment.settings
@@ -227,13 +229,15 @@ export async function setupTogetherSandbox(
         : {}),
       snapshotAlias: alias,
     });
+    // Sizing applies to caller-owned snapshots only; Together sizes its own image.
+    const { snapshotAlias, cpuCount, memoryMiB, ...imageSettings } = settings;
     config.environment = {
       kind: "together",
       apiKeyEnv:
         config.environment?.kind === "together"
           ? config.environment.apiKeyEnv
           : "TOGETHER_API_KEY",
-      settings,
+      settings: alias ? settings : imageSettings,
     };
     if (previous === null) {
       const models = [
@@ -330,13 +334,12 @@ export async function setupTogetherSandbox(
       );
     }
     output.check("pass", "Egress Guardian installed on this machine.");
-    const backend = await (
-      dependencies.loadTogetherSetupBackend ?? loadTogetherSetupBackend
-    )();
-    const available = await backend.exists(
-      alias,
-      env[profile.environment.apiKeyEnv],
-    );
+    const backend = alias
+      ? await (dependencies.loadTogetherSetupBackend ?? loadTogetherSetupBackend)()
+      : null;
+    const available = alias
+      ? await backend.exists(alias, env[profile.environment.apiKeyEnv])
+      : true;
     if (!available && snapshot)
       throw setupError(
         "setup.snapshot-missing",
@@ -378,7 +381,7 @@ export async function setupTogetherSandbox(
       output.check("pass", "Together snapshot built.");
     } else {
       await saveCredentials(io.cwd, entered);
-      output.check("pass", `Together snapshot available · ${alias}`);
+      output.check("pass", alias ? `Together snapshot available · ${alias}` : "Together's Hurdle image selected; nothing to build.");
     }
     await atomicWrite(
       resolve(io.cwd, runtimePath),

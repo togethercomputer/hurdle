@@ -13,14 +13,15 @@ import {
 import { deepFreeze, RunSelectionInputError } from "../run-model.mjs";
 import { createTogetherProvider } from "./together-provider.mjs";
 import { createTogetherSocketProvider } from "./together-socket-provider.mjs";
-import { togetherUsesRunSocket } from "../together-api-url.mjs";
 import { randomBytes } from "node:crypto";
 import { validateSandboxEnvelope } from "./e2b.mjs";
 import { createTogetherGuardianController } from "./together-guardian.mjs";
-import { managedImageName } from "../managed-images.mjs";
 
+// Without a snapshot alias a run uses Together's Hurdle API, which boots
+// Together's own Hurdle image over one socket. An alias names a caller-owned
+// snapshot on the sandbox API instead; cpuCount and memoryMiB apply only there.
 const DEFAULT_SETTINGS = Object.freeze({
-  snapshotAlias: managedImageName(["claude-code"], "together"),
+  snapshotAlias: null,
   cpuCount: 1,
   memoryMiB: 2048,
   maxLifetimeMs: 3_600_000,
@@ -48,13 +49,14 @@ export function normalizeTogetherSettings(
       );
   const selected = { ...defaults, ...structuredClone(settings) };
   if (
-    typeof selected.snapshotAlias !== "string" ||
-    !selected.snapshotAlias.trim() ||
-    selected.snapshotAlias.length > 256 ||
-    /^REPLACE_WITH_/i.test(selected.snapshotAlias)
+    selected.snapshotAlias !== null &&
+    (typeof selected.snapshotAlias !== "string" ||
+      !selected.snapshotAlias.trim() ||
+      selected.snapshotAlias.length > 256 ||
+      /^REPLACE_WITH_/i.test(selected.snapshotAlias))
   )
     throw new RunSelectionInputError(
-      "Together snapshotAlias must name a caller-owned snapshot",
+      "Together snapshotAlias must name a caller-owned snapshot, or be omitted for Together's Hurdle image",
     );
   for (const [key, minimum, maximum] of [
     ["cpuCount", 1, 16],
@@ -140,9 +142,16 @@ function noEgress(reason = "unsupported-platform") {
   };
 }
 
+function validProvider(provider) {
+  return ["acquire", "stage", "run", "collectArtifacts", "dispose", "isDisposed"]
+    .every((method) => typeof provider?.[method] === "function");
+}
+
+// `provider` serves every run when given. Otherwise each run's settings choose:
+// a snapshot alias selects the sandbox API, none selects the Hurdle socket.
 export function createTogetherExecutionEnvironment({
   apiKey,
-  provider = togetherUsesRunSocket() ? createTogetherSocketProvider() : createTogetherProvider(),
+  provider: fixedProvider = null,
   guardian = createTogetherGuardianController(),
   defaults = DEFAULT_SETTINGS,
   captureMaxBytes = DEFAULT_CONTROLLER_CAPTURE_MAX_BYTES,
@@ -152,20 +161,20 @@ export function createTogetherExecutionEnvironment({
     throw new TypeError("Together Execution Environment requires an API key");
   if (["prepare", "attach", "seal"].some((method) => typeof guardian?.[method] !== "function"))
     throw new TypeError("Together Execution Environment requires a Guardian controller");
-  for (const method of [
-    "acquire",
-    "stage",
-    "run",
-    "collectArtifacts",
-    "dispose",
-    "isDisposed",
-  ])
-    if (typeof provider?.[method] !== "function")
-      throw new TypeError("Together Execution Environment requires a provider");
+  if (fixedProvider !== null && !validProvider(fixedProvider))
+    throw new TypeError("Together Execution Environment requires a provider");
+  const providers = {};
+  const providerFor = (settings) => {
+    if (fixedProvider) return fixedProvider;
+    const kind = settings.snapshotAlias ? "sandboxApi" : "socket";
+    providers[kind] ??= kind === "socket" ? createTogetherSocketProvider() : createTogetherProvider();
+    return providers[kind];
+  };
   const normalizedDefaults = normalizeTogetherSettings(defaults);
   const progress = normalizeExecutionProgressObserver(progressObserver);
+  // Both built-in providers report workspace metadata.
   const metadataSupported =
-    typeof provider.collectWorkspaceArtifactMetadata === "function";
+    !fixedProvider || typeof fixedProvider.collectWorkspaceArtifactMetadata === "function";
   return Object.freeze({
     id: "together",
     capabilities: Object.freeze([
@@ -196,6 +205,8 @@ export function createTogetherExecutionEnvironment({
         throw new TypeError(
           "Together workspace artifact metadata is unsupported by this provider",
         );
+      const settings = normalizeTogetherSettings(envelope.settings, normalizedDefaults);
+      const provider = providerFor(settings);
       if (provider.sealedOnly) {
         const exposed = envelope.credentialBindings
           .filter(({ delivery }) => delivery.kind !== "captured-http-header")
@@ -208,10 +219,6 @@ export function createTogetherExecutionEnvironment({
       return withExecutionCredentialValues(
         envelope,
         async (credentialValues) => {
-          const settings = normalizeTogetherSettings(
-            envelope.settings,
-            normalizedDefaults,
-          );
           const stdout = createBoundedControllerCapture(captureMaxBytes);
           const stderr = createBoundedControllerCapture(captureMaxBytes);
           const integrityIssues = [];

@@ -236,21 +236,29 @@ node harness/bin/hurdle.mjs run examples/copy-message/example.suite.mjs --view
 For an installed npm package, use `npx hurdle` in place of
 `node harness/bin/hurdle.mjs`. Setup installs the Guardian on this machine
 (pinned uv, Python 3.12 and hash-locked mitmproxy, cached under
-`~/.cache/hurdle/guardian`; macOS and Linux on x86-64 or arm64) and builds a reusable snapshot containing Node
-22, Python, Linux controller tools, and the selected pinned Agent CLIs. No local
-Docker installation is needed. Rerunning setup reuses the snapshot alias; like
-E2B templates, Hurdle's snapshots gain an Agent when a Suite needs it and a new
-tag when Hurdle pins a newer Agent CLI. Pass `--snapshot ALIAS` to select an
-existing snapshot; setup does not rebuild a missing caller-selected alias.
+`~/.cache/hurdle/guardian`; macOS and Linux on x86-64 or arm64). Nothing is
+built: runs use Together's own Hurdle image, which holds Node 22, Python, Linux
+controller tools and the pinned Agent CLIs, over Together's Hurdle API. Each
+run is one WebSocket to a fresh sandbox; the sandbox has no network of its own,
+and every connection the Agent opens travels over that socket to the Guardian.
+Closing the socket ends the sandbox.
+
+Pass `--snapshot ALIAS` to run a caller-owned snapshot on the Together sandbox
+API instead. A project that built a Hurdle snapshot with an earlier version
+keeps using it; like E2B templates, those snapshots gain an Agent when a Suite
+needs it and a new tag when Hurdle pins a newer Agent CLI. Setup does not
+rebuild a missing caller-selected alias.
 
 Setup saves the existing Project Runtime, preserving its store, Judge, Viewer
-port, and Together resource limits. A new Together Runtime uses one CPU, 2048
-MiB, a five-minute sandbox lifetime for artifact tasks, and `.hurdle/together-results-v1`.
-API tasks use a ten-minute lifetime. Each workload exposes one root-owned relay
-port that only admits requests carrying both the sandbox token (checked by
-Together's ingress) and a per-cell token. The management Agent port remains
-authenticated by Together and is blocked for the evaluated Linux user. The sandbox-management key is kept in the controller and is not
-injected into the evaluated Agent's environment.
+port, and Together resource limits. A new Together Runtime uses a five-minute
+sandbox lifetime for artifact tasks and `.hurdle/together-results-v1`; API
+tasks use a ten-minute lifetime. On the sandbox API a Runtime also sets one CPU
+and 2048 MiB, and each workload exposes one root-owned relay port that only
+admits requests carrying both the sandbox token (checked by Together's ingress)
+and a per-cell token. The management Agent port remains authenticated by
+Together and is blocked for the evaluated Linux user. The sandbox-management key
+is kept in the controller and is not injected into the evaluated Agent's
+environment.
 
 Run the API example with the same setup/run flow:
 
@@ -259,14 +267,16 @@ node harness/bin/hurdle.mjs setup examples/together-api/example.suite.mjs --sand
 node harness/bin/hurdle.mjs run examples/together-api/example.suite.mjs --view
 ```
 
-API setup selects a network-enabled snapshot (`hurdle-claude-code-network@v1` by
-default). Hurdle's snapshots contain the legacy IPv4/IPv6 firewall tools required
-by Together's kernel; caller-owned snapshots must supply those tools for every task.
+For a project's own Hurdle snapshot, API setup selects a network-enabled tag
+(`hurdle-claude-code-network@v1` by default). Hurdle's snapshots contain the
+legacy IPv4/IPv6 firewall tools required by Together's kernel; caller-owned
+snapshots must supply those tools for every task.
 
 The Guardian reuses the E2B proxy. Inside the workload, a root-owned bridge
-accepts every proxied connection; the controller claims each one over an inbound
-WebSocket to the relay port and pipes it into the Guardian on this machine
-without logging payloads. All hosts are TLS-intercepted with a per-cell CA that
+accepts every proxied connection and pipes it into the Guardian on this machine
+without logging payloads: over the run's one socket on the Hurdle API, or over
+an inbound WebSocket to the relay port on the sandbox API. All hosts are
+TLS-intercepted with a per-cell CA that
 the workload trusts. Capture hosts get the full policy: HTTPS on port 443 only,
 selected response headers, exact request blocking, bounded JSON exchange facts
 and credential substitution. Other hosts, including the Agent's model API and
@@ -283,10 +293,11 @@ controller.
 
 Keep this machine online while cells run: an end-to-end CONNECT preflight runs
 before the Agent starts, and losing the transport cuts the sandbox's egress and
-makes capture fail. Root-owned firewall rules prevent direct connections to
-resolved capture-host addresses in both IP families. Together does not yet
-support outbound network rules, so traffic that ignores the proxy settings can
-still leave the sandbox directly to other hosts. Evidence must drain and pass
+makes capture fail. On the Hurdle API the sandbox has no route out at all. On
+the sandbox API, root-owned firewall rules prevent direct connections to
+resolved capture-host addresses in both IP families, but Together does not yet
+support outbound network rules there, so traffic that ignores the proxy settings
+can still leave the sandbox directly to other hosts. Evidence must drain and pass
 byte-bound, digest and sequence verification before the checks receive it.
 Capture setup or sealing failures make an API Run incomplete; for artifact-only
 tasks the journal is diagnostic.
@@ -294,13 +305,15 @@ tasks the journal is diagnostic.
 For separate Runtime files:
 
 ```sh
-npm run runtime:init -- together --snapshot hurdle-claude-code@v1
+npm run runtime:init -- together
 node harness/bin/hurdle.mjs run examples/copy-message/example.suite.mjs --runtime .hurdle/runtime/together.json
 ```
 
 `together-postgres` uses the same execution backend with Postgres storage.
-Runtime settings are `snapshotAlias`, `cpuCount` (1–16), `memoryMiB` (1024–8192
-per CPU), and `maxLifetimeMs` (1000–86400000). Separate Runtime initialization
+Runtime settings are `maxLifetimeMs` (1000–86400000) and, for a caller-owned
+snapshot on the sandbox API, `snapshotAlias` with `cpuCount` (1–16) and
+`memoryMiB` (1024–8192 per CPU); pass `--snapshot ALIAS` to initialization to
+select one. Separate Runtime initialization
 uses a one-hour lifetime; setup uses five minutes for artifact tasks and ten for
 API capture. When a project adds an API Suite, setup raises its own five-minute
 default to ten minutes; other configured limits stay as set. Hurdle reserves the

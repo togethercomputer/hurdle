@@ -41,7 +41,8 @@ function checkManagedImage(environment, adapterIds, setup) {
   const together = environment.kind === "together";
   const provider = together ? "together" : "e2b";
   const image = together ? normalizeTogetherSettings(environment.settings).snapshotAlias : environment.settings?.workloadTemplate;
-  const managed = managedImageAgents(image, provider);
+  // Together's own Hurdle image, used without an alias, is Together's to keep current.
+  const managed = image ? managedImageAgents(image, provider) : null;
   if (!managed) return null;
   const label = `${together ? "Together snapshot" : "E2B template"} ${image}`;
   const agents = [...new Set([...managed.agents, ...adapterIds])];
@@ -173,7 +174,9 @@ export async function checkAgentReadiness({
     checks.push(result(checked.status === "pass" ? "pass" : "fail", "runtime.e2b", `E2B: ${checked.message}.`));
   }
   if (runtimeProfile.environment.kind === "together") {
-    const checked = await checkTogetherSandbox(runtimeEnv[runtimeProfile.environment.apiKeyEnv]);
+    const checked = await checkTogetherSandbox(runtimeEnv[runtimeProfile.environment.apiKeyEnv], {
+      snapshotAlias: normalizeTogetherSettings(runtimeProfile.environment.settings).snapshotAlias,
+    });
     checks.push(result(["pass", "skip"].includes(checked.status) ? checked.status : "fail", "runtime.together", `Together sandbox: ${checked.message}.`));
     // Setup installs the Guardian after readiness passes.
     if (!allowHostGuardianSetup) {

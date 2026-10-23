@@ -315,6 +315,7 @@ test("Together transfers binary artifacts without UTF-8 corruption", async () =>
 test("Together preflight is read-only and omits provider diagnostics", async () => {
   let listed = false;
   const result = await checkTogetherSandboxCredential("key", {
+    snapshotAlias: "caller@v1",
     loadSdk: async () => ({
       TogetherSandbox: class {
         constructor() {
@@ -330,6 +331,7 @@ test("Together preflight is read-only and omits provider diagnostics", async () 
   assert.equal(listed, true);
   assert.equal(result.status, "pass");
   const rejected = await checkTogetherSandboxCredential("key", {
+    snapshotAlias: "caller@v1",
     loadSdk: async () => {
       throw Object.assign(new Error("private provider body"), { status: 403 });
     },
@@ -337,9 +339,8 @@ test("Together preflight is read-only and omits provider diagnostics", async () 
   assert.equal(rejected.status, "fail");
   assert.doesNotMatch(JSON.stringify(rejected), /private provider body/);
 });
-test("Together preflight leaves the key to Bartender's Hurdle API", async () => {
-  const env = { HURDLE_TOGETHER_RUN_URL: "wss://hurdle.test/v1/compute/experimental/run" };
+test("Together preflight leaves the key to the Hurdle API when no snapshot is selected", async () => {
   const loadSdk = async () => { throw new Error("the sandbox API is not used"); };
-  assert.equal((await checkTogetherSandboxCredential("key", { loadSdk, env })).status, "skip");
-  assert.equal((await checkTogetherSandboxCredential("", { loadSdk, env })).status, "fail");
+  assert.equal((await checkTogetherSandboxCredential("key", { loadSdk })).status, "skip");
+  assert.equal((await checkTogetherSandboxCredential("", { loadSdk })).status, "fail");
 });
