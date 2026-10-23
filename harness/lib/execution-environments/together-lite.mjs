@@ -257,13 +257,17 @@ export function createTogetherLiteExecutionEnvironment({
           reportStatus("preparing-environment");
           session.mux.onStream = (stream) => {
             const id = stream.ID();
+            // Each stdio stream is closed from this side once the muxer's FIN
+            // arrives, so neither end is left holding it half-open.
             if (id === STDOUT_STREAM_ID) {
               stream.on("data", (chunk) => stdout.append(chunk.toString("utf8")));
+              stream.once("end", () => stream.close());
               stream.on("error", () => {});
               return;
             }
             if (id === STDERR_STREAM_ID) {
               stream.on("data", (chunk) => stderr.append(chunk.toString("utf8")));
+              stream.once("end", () => stream.close());
               stream.on("error", () => {});
               return;
             }

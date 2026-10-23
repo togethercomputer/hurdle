@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Transform } from "node:stream";
 import test from "node:test";
 
 import { assertRuntimeDependencies } from "../lib/backend-dependencies.mjs";
@@ -86,10 +87,21 @@ function sealedCollection() {
   };
 }
 
+// A relay that splits every chunk into pieces of `size` bytes, each sent as its
+// own WebSocket message, so yamux frames arrive split across messages.
+function fragmenting(size) {
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      for (let offset = 0; offset < chunk.length; offset += size) this.push(chunk.subarray(offset, offset + size));
+      callback();
+    },
+  });
+}
+
 // Stands in for the platform: authenticates the upgrade, then plays the
 // in-sandbox muxer over yamux. The local "proxy" the environment pumps egress
 // into is a plain TCP listener that answers any CONNECT with 200.
-async function fakePlatform(t, { authorize = true } = {}) {
+async function fakePlatform(t, { authorize = true, fragment = 0 } = {}) {
   const received = { url: null, headers: null, hello: null, frames: [], proxyBytes: "", egressReply: null, closeCode: null };
   let resolveClosed;
   received.closed = new Promise((resolve) => { resolveClosed = resolve; });
@@ -141,7 +153,9 @@ async function fakePlatform(t, { authorize = true } = {}) {
           egress.write(CONNECT);
         });
       }, { logger: () => {} });
-      mux.pipe(transport).pipe(mux);
+      if (fragment) mux.pipe(fragmenting(fragment)).pipe(transport);
+      else mux.pipe(transport);
+      transport.pipe(mux);
       ws.once("close", (code) => { received.closeCode = code; mux.close(); resolveClosed(code); });
     });
   });
@@ -228,6 +242,19 @@ test("Together Lite runs a cell over one connection and pumps egress into the lo
   // normally once the run ended, which is what ends the sandbox.
   assert.doesNotMatch(Buffer.concat(received.frames).toString("latin1"), /real-agent-secret/);
   assert.equal(await received.closed, 1000);
+});
+
+test("Together Lite survives a relay that splits yamux frames across WebSocket messages", async (t) => {
+  // 10 bytes is smaller than a yamux header, so every frame arrives in pieces.
+  const platform = await fakePlatform(t, { fragment: 10 });
+  const events = [];
+  const result = await fixture(platform, events).execute(stagedEnvelope(t));
+  assert.deepEqual(result.integrityIssues, []);
+  assert.equal(result.process.exitCode, 0);
+  assert.equal(result.process.stdout.text, "agent transcript\n");
+  assert.equal(result.process.stderr.text, "agent warning\n");
+  assert.match(platform.received.egressReply, /^HTTP\/1\.1 200 /);
+  assert.equal(await platform.received.closed, 1000);
 });
 
 test("Together Lite reports a rejected upgrade as an acquire failure and still closes the Guardian", async (t) => {

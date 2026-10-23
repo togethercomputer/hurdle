@@ -1,6 +1,6 @@
 import { createHash, X509Certificate } from "node:crypto";
 import { createRequire } from "node:module";
-import { Duplex } from "node:stream";
+import { Duplex, Transform } from "node:stream";
 
 // Transport for the experimental single-connection sandbox API. This module
 // is the stand-in for the platform SDK: it performs the authenticated upgrade
@@ -106,6 +106,37 @@ export function websocketDuplex(ws) {
   return duplex;
 }
 
+const YAMUX_HEADER_BYTES = 12;
+const YAMUX_TYPE_DATA = 0;
+
+// Re-chunks the inbound byte stream on yamux frame boundaries. yamux-js parses
+// each chunk it is given as whole frames and discards one that splits a frame,
+// so without this the client would depend on every relay in the path preserving
+// WebSocket message boundaries. With it, relays may fragment or coalesce freely,
+// which is what "the payloads concatenate into one byte stream" promises.
+function yamuxFrameAligner() {
+  let pending = Buffer.alloc(0);
+  return new Transform({
+    transform(chunk, _encoding, callback) {
+      pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+      let offset = 0;
+      while (pending.length - offset >= YAMUX_HEADER_BYTES) {
+        const type = pending[offset + 1];
+        const length = pending.readUInt32BE(offset + 8);
+        // Only data frames carry a body; for the others, length is a value.
+        const body = type === YAMUX_TYPE_DATA ? length : 0;
+        if (body > MAX_FRAME_BYTES) return callback(new Error("sandbox sent a yamux frame over the frame bound"));
+        const size = YAMUX_HEADER_BYTES + body;
+        if (pending.length - offset < size) break;
+        this.push(pending.subarray(offset, offset + size));
+        offset += size;
+      }
+      pending = offset ? pending.subarray(offset) : pending;
+      callback();
+    },
+  });
+}
+
 export async function connectSandbox({
   url = DEFAULT_SANDBOX_URL,
   image,
@@ -174,7 +205,28 @@ export async function connectSandbox({
   transport.on("error", (error) => {
     if (!closing) failure ||= error;
   });
-  mux.pipe(transport).pipe(mux);
+  // yamux-js acknowledges a peer-opened stream only when it first has something
+  // to send; hashicorp/yamux closes the whole session when no ACK arrives within
+  // its open timeout (75 s by default), so a quiet stdout or stderr would end the
+  // run. Acknowledge on arrival, as the reference implementation does, whichever
+  // handler the caller installs on `mux.onStream`.
+  let streamHandler = (stream) => stream.sendWindowUpdate();
+  Object.defineProperty(mux, "onStream", {
+    configurable: true,
+    get: () => streamHandler,
+    set: (handler) => {
+      streamHandler = typeof handler === "function"
+        ? (stream) => { stream.sendWindowUpdate(); handler(stream); }
+        : (stream) => stream.sendWindowUpdate();
+    },
+  });
+  mux.pipe(transport);
+  const aligner = yamuxFrameAligner();
+  aligner.on("error", (error) => {
+    if (!closing) failure ||= error;
+    transport.destroy(error);
+  });
+  transport.pipe(aligner).pipe(mux);
   return Object.freeze({
     mux,
     get closeCode() { return transport.closeCode; },
