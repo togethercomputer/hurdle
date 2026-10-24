@@ -44,7 +44,7 @@ stays in the Guardian; the Agent receives a surrogate. Both VMs terminate withou
 retaining a result snapshot.
 
 The prompt instructs the Agent to make one model-list call and one completion
-call with at most 32 generated tokens and no retries. Those instructions are not
+call with at most 256 generated tokens and no retries. Those instructions are not
 a hard spending cap: the Agent could make additional calls. A required code
 check rejects extra completion attempts after execution. Edit
 `fixtures/request.json` to try another model.

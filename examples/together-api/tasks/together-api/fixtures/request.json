@@ -1,7 +1,7 @@
 {
-  "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  "model": "openai/gpt-oss-120b",
   "messages": [{ "role": "user", "content": "In one short sentence, explain what an agent evaluation checks." }],
-  "max_tokens": 32,
+  "max_tokens": 256,
   "temperature": 0,
   "stream": false
 }
