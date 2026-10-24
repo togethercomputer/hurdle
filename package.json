@@ -30,6 +30,7 @@
     "examples/concurrency-smoke",
     "examples/kitchen-sink",
     "docs/sandbox-setup.md",
+    "docs/together-socket.md",
     "harness/bin",
     "harness/index.mjs",
     "harness/lib",

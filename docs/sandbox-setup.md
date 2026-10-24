@@ -241,7 +241,8 @@ built: runs use Together's own Hurdle image, which holds Node 22, Python, Linux
 controller tools and the pinned Agent CLIs, over Together's Hurdle API. Each
 run is one WebSocket to a fresh sandbox; the sandbox has no network of its own,
 and every connection the Agent opens travels over that socket to the Guardian.
-Closing the socket ends the sandbox.
+Closing the socket ends the sandbox. [The Together Hurdle socket](./together-socket.md)
+describes the contract.
 
 Pass `--snapshot ALIAS` to run a caller-owned snapshot on the Together sandbox
 API instead. A project that built a Hurdle snapshot with an earlier version
