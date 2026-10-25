@@ -255,14 +255,44 @@ test("Together capture overflow remains visible to Run Trust", async () => {
   assert.equal(result.process.stdout.complete, false);
 });
 
-test("a sealed-only provider refuses credentials delivered as environment values before anything starts", async () => {
+test("a sealed-only provider refuses an environment credential with no API hosts to carry it, with a reason", async () => {
   const provider = { ...fixture().provider, sealedOnly: true, async acquire() { throw new Error("must not allocate"); } };
   const guardian = { async prepare() { throw new Error("must not start"); }, async attach() {}, async seal() {} };
   const environment = createTogetherExecutionEnvironment({ apiKey: "provider", provider, guardian });
   await assert.rejects(environment.execute(envelope({
     credentialDefinitions: [{ name: "KEY", delivery: { kind: "environment" } }],
     credentialValues: { KEY: "real-target-secret" },
-  })), /captured-http-header delivery for KEY/);
+  })), (error) => /no API hosts to carry KEY/.test(error.message) && error.operatorReason === error.message);
+});
+
+test("a sealed-only provider delivers an environment credential through the Guardian on the task's API hosts", async () => {
+  const seen = {};
+  const provider = {
+    ...fixture().provider,
+    sealedOnly: true,
+    async run(_resource, { environment }) { seen.workloadKey = environment.KEY; return { exitCode: 0, quiescent: true, durationMs: 1 }; },
+  };
+  const guardian = {
+    async prepare({ credentialBindings, credentialValues, surrogates }) {
+      seen.binding = credentialBindings.find(({ environmentName }) => environmentName === "KEY");
+      seen.realValue = credentialValues.KEY;
+      seen.surrogate = surrogates.KEY;
+      return {};
+    },
+    async attach() {},
+    async seal() { return sealedCollection(); },
+  };
+  const environment = createTogetherExecutionEnvironment({ apiKey: "provider", provider, guardian });
+  const result = await environment.execute(envelope({
+    target: { egress: { relevantHosts: ["api.example.com"], selectedFields: [] } },
+    credentialDefinitions: [{ name: "KEY", delivery: { kind: "environment" } }],
+    credentialValues: { KEY: "real-target-secret" },
+  }));
+  assert.deepEqual(seen.binding.delivery, { kind: "captured-http-header", hosts: ["api.example.com"], headerNames: ["authorization"] });
+  assert.equal(seen.realValue, "real-target-secret");
+  assert.match(seen.surrogate, /^tae_surrogate_/);
+  assert.equal(seen.workloadKey, seen.surrogate);
+  assert.deepEqual(result.integrityIssues, []);
 });
 
 function capturedEnvelope(options = {}) {
