@@ -480,11 +480,14 @@ function markerPayload(stdout, marker) {
 
 // Kernel threads (PF_KTHREAD) appear with disk writeback, ignore signals and
 // never run Agent code; counting them made busy runs falsely non-quiescent.
+// Zombies hold no code either and cannot be signalled away: a sandbox whose
+// PID 1 does not reap orphans (Together's Pint) keeps one for every child a
+// killed Agent left behind, which would make every timed-out run non-quiescent.
 const PROCESS_START_TIME_PY = `def start_time(pid):
     try:
         with open(f"/proc/{pid}/stat", "r", encoding="ascii") as handle:
             suffix = handle.read().rsplit(")", 1)[1].split()
-        if int(suffix[6]) & 0x00200000:
+        if suffix[0] == "Z" or int(suffix[6]) & 0x00200000:
             return None
         return suffix[19]
     except (FileNotFoundError, PermissionError, IndexError, ValueError):
