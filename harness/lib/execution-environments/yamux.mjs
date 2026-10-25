@@ -18,7 +18,11 @@ const TYPE = Object.freeze({ data: 0, windowUpdate: 1, ping: 2, goAway: 3 });
 const FLAG = Object.freeze({ syn: 1, ack: 2, fin: 4, rst: 8 });
 const GO_AWAY = Object.freeze({ normal: 0, protocol: 1, internal: 2 });
 
-export const DEFAULT_WINDOW = 256 * 1024;
+// The protocol's initial window is 256 KiB; a session grants up to this much
+// as its reader consumes. Throughput per stream is one window per round trip
+// to the Guardian, so 256 KiB over a 150 ms relay path was under 1 MB/s.
+export const INITIAL_WINDOW = 256 * 1024;
+export const DEFAULT_WINDOW = 2 * 1024 * 1024;
 // Bodies are cut so that one frame stays a modest WebSocket message.
 export const MAX_FRAME_BODY = 64 * 1024;
 
@@ -40,7 +44,7 @@ export class Stream extends Duplex {
   #session;
   #id;
   #window;
-  #sendWindow = DEFAULT_WINDOW;
+  #sendWindow = INITIAL_WINDOW;
   #recvWindow;
   #sentFin = false;
   #receivedFin = false;
@@ -54,7 +58,9 @@ export class Stream extends Duplex {
     this.#session = session;
     this.#id = id;
     this.#window = window;
-    this.#recvWindow = window;
+    // What the peer may send before a grant: the protocol's initial window.
+    // A larger window is granted as soon as the stream exists (_replenish).
+    this.#recvWindow = INITIAL_WINDOW;
   }
 
   get id() { return this.#id; }
@@ -90,19 +96,21 @@ export class Stream extends Duplex {
     callback();
   }
 
-  // Consumption grants window: once the reader has taken half of it, tell the
-  // peer it may send that much again. Hooked on read() rather than _read(),
-  // which Node calls only until a call of it fails to push.
+  // Consumption grants window: once the peer may send less than half the
+  // window beyond what is buffered, tell it the rest. Hooked on read() rather
+  // than _read(), which Node calls only until a call of it fails to push.
   read(size) {
     const chunk = super.read(size);
-    if (!this.#gone && !this.#receivedFin) {
-      const consumed = this.#window - this.#recvWindow - this.readableLength;
-      if (consumed >= this.#window / 2) {
-        this.#recvWindow += consumed;
-        this.#session._emit(header(TYPE.windowUpdate, 0, this.#id, consumed));
-      }
-    }
+    this._replenish();
     return chunk;
+  }
+
+  _replenish() {
+    if (this.#gone || this.#receivedFin) return;
+    const delta = this.#window - this.readableLength - this.#recvWindow;
+    if (delta < this.#window / 2) return;
+    this.#recvWindow += delta;
+    this.#session._emit(header(TYPE.windowUpdate, 0, this.#id, delta));
   }
 
   _read() {}
@@ -189,7 +197,7 @@ export class Session extends Duplex {
     this.#client = Boolean(client);
     this.#nextId = this.#client ? 1 : 2;
     // The protocol fixes the initial window; a session may only grant more.
-    this.#window = Math.max(window, DEFAULT_WINDOW);
+    this.#window = Math.max(window, INITIAL_WINDOW);
     this.#acceptBacklog = acceptBacklog;
     this.#onStream = onStream;
     this.#keepAliveTimeoutMs = keepAliveTimeoutMs;
@@ -212,6 +220,7 @@ export class Session extends Duplex {
     const stream = new Stream(this, id, this.#window);
     this.#streams.set(id, stream);
     this._emit(header(TYPE.windowUpdate, FLAG.syn, id, 0));
+    stream._replenish();
     return stream;
   }
 
@@ -307,6 +316,7 @@ export class Session extends Duplex {
       stream = new Stream(this, id, this.#window);
       this.#streams.set(id, stream);
       stream._acknowledge();
+      stream._replenish();
       this.#onStream?.(stream);
     }
     // A stream already finished with: the peer's late frames are noise.
