@@ -1,15 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { randomBytes } from "node:crypto";
 import {
   createExecutionEnvelope,
   closeExecutionCredentialLease,
 } from "../lib/execution-envelope.mjs";
 import {
+  agentCredentialSurrogate,
   createTogetherExecutionEnvironment,
   normalizeTogetherSettings,
 } from "../lib/execution-environments/together.mjs";
-import { agentCredentialStandIn } from "../lib/agent-credential-routes.mjs";
 import {
   resolveRuntimeProfile,
   resolveRuntimeSecrets,
@@ -389,42 +388,32 @@ test("Together keeps the Agent's model credentials on the host and gives the wor
       return { exitCode: 0, quiescent: true, durationMs: 1 };
     },
   });
-  // The Claude Code Adapter declares this route; Together and E2B share it.
-  const route = {
-    environmentName: "CLAUDE_CODE_OAUTH_TOKEN",
-    hosts: ["api.anthropic.com"],
-    headerNames: ["x-api-key", "authorization"],
-  };
   const result = await f.environment.execute(envelope({
-    launchPlan: {
-      command: "agent",
-      env: { CLAUDE_CODE_OAUTH_TOKEN: realToken },
-      credentialRoutes: [route],
-      timeoutMs: 1000,
-    },
+    launchPlan: { command: "agent", env: { CLAUDE_CODE_OAUTH_TOKEN: realToken }, timeoutMs: 1000 },
   }));
-  assert.match(launched.CLAUDE_CODE_OAUTH_TOKEN, /^sk-ant-oat01-hurdle_agent_stand_in_[A-Za-z0-9_-]{43}$/);
+  assert.match(launched.CLAUDE_CODE_OAUTH_TOKEN, /^sk-ant-oat01-[A-Za-z0-9_-]{43}$/);
   assert.notEqual(launched.CLAUDE_CODE_OAUTH_TOKEN, realToken);
   assert.ok(!JSON.stringify(launched).includes("real-agent-token"), "the workload never receives the real token");
   assert.deepEqual(prepared.agentCredentials, [{
-    ...route,
+    environmentName: "CLAUDE_CODE_OAUTH_TOKEN",
     value: realToken,
     surrogate: launched.CLAUDE_CODE_OAUTH_TOKEN,
+    hosts: ["api.anthropic.com"],
+    headerNames: ["authorization"],
   }]);
   assert.doesNotMatch(JSON.stringify(result), /real-agent-token/);
 });
 
-test("Agent credential stand-ins keep non-secret shape but none of the secret", () => {
-  const random = () => randomBytes(32).toString("base64url");
+test("Agent credential surrogates keep non-secret shape but none of the secret", () => {
   const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJhY2NvdW50IjoiYSJ9.c2lnbmF0dXJlLXNlY3JldA";
-  const standIn = agentCredentialStandIn(jwt, random);
-  assert.match(standIn, /^eyJhbGciOiJSUzI1NiJ9\.eyJhY2NvdW50IjoiYSJ9\.hurdle_agent_stand_in_[A-Za-z0-9_-]{43}$/);
-  assert.ok(!standIn.includes("c2lnbmF0dXJlLXNlY3JldA"));
-  assert.match(agentCredentialStandIn("sk-proj-abcdef", random), /^sk-proj-hurdle_agent_stand_in_[A-Za-z0-9_-]{43}$/);
-  assert.match(agentCredentialStandIn("opaque", random), /^hurdle_agent_stand_in_[A-Za-z0-9_-]{43}$/);
-  assert.match(agentCredentialStandIn("sk-ant-api03-secret", random), /^sk-ant-api03-hurdle_agent_stand_in_[A-Za-z0-9_-]{43}$/);
-  assert.match(agentCredentialStandIn("agent-auth-secret-value", random), /^hurdle_agent_stand_in_[A-Za-z0-9_-]{43}$/, "unknown prefixes may be secret");
-  assert.notEqual(agentCredentialStandIn("sk-x", random), agentCredentialStandIn("sk-x", random));
+  const surrogate = agentCredentialSurrogate(jwt);
+  assert.match(surrogate, /^eyJhbGciOiJSUzI1NiJ9\.eyJhY2NvdW50IjoiYSJ9\.[A-Za-z0-9_-]{43}$/);
+  assert.ok(!surrogate.endsWith("c2lnbmF0dXJlLXNlY3JldA"));
+  assert.match(agentCredentialSurrogate("sk-proj-abcdef"), /^sk-proj-[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("opaque"), /^[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("sk-ant-api03-secret"), /^sk-ant-api03-[A-Za-z0-9_-]{43}$/);
+  assert.match(agentCredentialSurrogate("agent-auth-secret-value"), /^[A-Za-z0-9_-]{43}$/, "unknown prefixes may be secret");
+  assert.notEqual(agentCredentialSurrogate("sk-x"), agentCredentialSurrogate("sk-x"));
 });
 
 test("Together seal failure is incomplete only for tasks with capture hosts", async () => {
@@ -519,7 +508,7 @@ test('Together composes with the public Suite API, Claude adapter, checks, and c
     async stage(_resource, input) { assert.equal(input.fixtures.length, 1); },
     async run(_resource, { onStdout, environment }) {
       // The workload holds a surrogate; the host Guardian substitutes the key.
-      assert.match(environment.ANTHROPIC_API_KEY, /^hurdle_agent_stand_in_[A-Za-z0-9_-]{43}$/);
+      assert.match(environment.ANTHROPIC_API_KEY, /^[A-Za-z0-9_-]{43}$/);
       assert.equal(environment.TOGETHER_API_KEY, undefined);
       onStdout(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'controlled-session', result: 'Copied fixture', num_turns: 1, total_cost_usd: 0 }) + '\n');
       return { exitCode: 0, signal: null, timedOut: false, quiescent: true, spawnError: null, startedAt: new Date().toISOString(), endedAt: new Date().toISOString(), durationMs: 1 };

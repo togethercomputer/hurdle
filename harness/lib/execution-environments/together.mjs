@@ -16,6 +16,7 @@ import { createTogetherSocketProvider } from "./together-socket-provider.mjs";
 import { randomBytes } from "node:crypto";
 import { validateSandboxEnvelope } from "./e2b.mjs";
 import {
+  agentCredentialStandIn,
   prepareAgentCredentials,
   withAgentCredentialStandIns,
 } from "../agent-credential-routes.mjs";
@@ -97,6 +98,13 @@ function active(signal) {
 }
 function defaultEntropy() {
   return randomBytes(32).toString("base64url");
+}
+
+// Keeps the shape a CLI may inspect before sending: a key's non-secret
+// prefix (sk-ant-oat01-), or a JWT's header and claims with a fresh
+// signature. The shared Agent credential module makes every stand-in.
+export function agentCredentialSurrogate(value) {
+  return agentCredentialStandIn(value, defaultEntropy);
 }
 
 // A Hurdle sandbox holds no secrets. A credential the task declared for

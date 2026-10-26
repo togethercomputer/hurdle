@@ -93,22 +93,22 @@ test("a stand-in copies only a public key prefix, never secret bytes", () => {
   const entropy = () => "entropy";
   assert.equal(
     agentCredentialStandIn("sk-ant-api03-SECRET-part_two", entropy),
-    "sk-ant-api03-hurdle_agent_stand_in_entropy",
+    "sk-ant-api03-entropy",
   );
   assert.equal(
     agentCredentialStandIn("sk-ant-oat01-SECRET", entropy),
-    "sk-ant-oat01-hurdle_agent_stand_in_entropy",
+    "sk-ant-oat01-entropy",
   );
   assert.equal(
     agentCredentialStandIn("sk-proj-SECRET-part_two-x", entropy),
-    "sk-proj-hurdle_agent_stand_in_entropy",
+    "sk-proj-entropy",
   );
-  assert.equal(agentCredentialStandIn("sk-SECRET-x", entropy), "sk-hurdle_agent_stand_in_entropy");
-  assert.equal(agentCredentialStandIn("SECRET-x-y", entropy), "hurdle_agent_stand_in_entropy");
+  assert.equal(agentCredentialStandIn("sk-SECRET-x", entropy), "sk-entropy");
+  assert.equal(agentCredentialStandIn("SECRET-x-y", entropy), "entropy");
   // A JWT keeps its header and claims but never its signature.
   assert.equal(
     agentCredentialStandIn("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.SIGNATURE-SECRET", entropy),
-    "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.hurdle_agent_stand_in_entropy",
+    "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.entropy",
   );
 });
 
@@ -120,21 +120,22 @@ test("routed Agent credentials reach the workload only as stand-ins on every tur
   const credentials = prepareAgentCredentials(plan, () => "turn");
   assert.deepEqual(credentials, [{
     environmentName: "ANTHROPIC_API_KEY",
-    surrogate: "sk-ant-api03-hurdle_agent_stand_in_turn",
+    surrogate: "sk-ant-api03-turn",
     value: "sk-ant-api03-real",
     hosts: ["api.anthropic.com"],
     headerNames: ["x-api-key", "authorization"],
   }]);
   assert.deepEqual(withAgentCredentialStandIns(plan, credentials), {
-    ANTHROPIC_API_KEY: "sk-ant-api03-hurdle_agent_stand_in_turn",
+    ANTHROPIC_API_KEY: "sk-ant-api03-turn",
     LANG: "C.UTF-8",
   });
   // A continuation plan that omits its routes still gets the stand-in.
   assert.equal(
     withAgentCredentialStandIns({ env: plan.env }, credentials).ANTHROPIC_API_KEY,
-    "sk-ant-api03-hurdle_agent_stand_in_turn",
+    "sk-ant-api03-turn",
   );
-  assert.deepEqual(prepareAgentCredentials({ env: plan.env }, () => "none"), []);
+  // Without a declared route, the well-known name still gets a stand-in.
+  assert.equal(prepareAgentCredentials({ env: plan.env }, () => "none")[0].surrogate, "sk-ant-api03-none");
 
   assert.throws(
     () => withAgentCredentialStandIns({
@@ -161,4 +162,46 @@ test("routed Agent credentials reach the workload only as stand-ins on every tur
     () => prepareAgentCredentials(plan, () => "sk-ant-api03-real"),
     /not distinct/,
   );
+});
+
+test("well-known Agent credentials get stand-ins even when no route is declared", () => {
+  const entropy = () => "fallback";
+  const undeclared = prepareAgentCredentials({
+    env: {
+      ANTHROPIC_API_KEY: "sk-ant-api03-real",
+      CODEX_ACCESS_TOKEN: "eyJh.eyJz.SIG",
+      ADAPTER_AUTH: "custom-secret",
+    },
+  }, entropy);
+  assert.deepEqual(undeclared.map(({ environmentName, hosts, headerNames, surrogate }) => ({
+    environmentName, hosts, headerNames, surrogate,
+  })), [
+    {
+      environmentName: "ANTHROPIC_API_KEY",
+      hosts: ["api.anthropic.com"],
+      headerNames: ["x-api-key", "authorization"],
+      surrogate: "sk-ant-api03-fallback",
+    },
+    {
+      environmentName: "CODEX_ACCESS_TOKEN",
+      hosts: ["chatgpt.com", "api.openai.com"],
+      headerNames: ["authorization"],
+      surrogate: "eyJh.eyJz.fallback",
+    },
+  ]);
+  const env = withAgentCredentialStandIns({ env: {
+    ANTHROPIC_API_KEY: "sk-ant-api03-real",
+    CODEX_ACCESS_TOKEN: "eyJh.eyJz.SIG",
+    ADAPTER_AUTH: "custom-secret",
+  } }, undeclared);
+  assert.equal(env.ANTHROPIC_API_KEY, "sk-ant-api03-fallback");
+  assert.equal(env.CODEX_ACCESS_TOKEN, "eyJh.eyJz.fallback");
+  assert.equal(env.ADAPTER_AUTH, "custom-secret", "only well-known names have a known route");
+
+  // A declared route wins over the default for the same credential.
+  const declared = prepareAgentCredentials({
+    env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-real" },
+    credentialRoutes: [anthropicRoute("CLAUDE_CODE_OAUTH_TOKEN")],
+  }, entropy);
+  assert.deepEqual(declared.map(({ headerNames }) => headerNames), [["x-api-key", "authorization"]]);
 });

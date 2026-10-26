@@ -68,24 +68,43 @@ export function assertCredentialRoutes(routes, env = {}) {
 
 const JWT_SEGMENT = /^[A-Za-z0-9_-]+$/;
 
+// Well-known Agent credentials and where each may go. A launch plan that
+// carries one without declaring its route still gets a stand-in, so a real
+// key never reaches a sandbox just because an Adapter omitted its route.
+export const DEFAULT_AGENT_CREDENTIAL_ROUTES = Object.freeze({
+  ANTHROPIC_API_KEY: Object.freeze({ hosts: ["api.anthropic.com"], headerNames: ["x-api-key", "authorization"] }),
+  CLAUDE_CODE_OAUTH_TOKEN: Object.freeze({ hosts: ["api.anthropic.com"], headerNames: ["authorization"] }),
+  CODEX_API_KEY: Object.freeze({ hosts: ["api.openai.com"], headerNames: ["authorization"] }),
+  CODEX_ACCESS_TOKEN: Object.freeze({ hosts: ["chatgpt.com", "api.openai.com"], headerNames: ["authorization"] }),
+});
+
 export function agentCredentialStandIn(value, entropy) {
   // A JWT keeps its header and claims, which a CLI may decode before sending,
   // with a fresh signature: the signature, not the claims, grants access.
   const parts = value.split(".");
   if (parts.length === 3 && parts.every((part) => JWT_SEGMENT.test(part))) {
-    return `${parts[0]}.${parts[1]}.hurdle_agent_stand_in_${entropy()}`;
+    return `${parts[0]}.${parts[1]}.${entropy()}`;
   }
   const prefix = PUBLIC_KEY_PREFIXES
     .map((pattern) => pattern.exec(value)?.[0])
     .find(Boolean) ?? "";
-  return `${prefix}hurdle_agent_stand_in_${entropy()}`;
+  return `${prefix}${entropy()}`;
 }
 
 // Resolve each declared route to the real value and a fresh stand-in. The real
 // value stays with the controller and the Guardian; the Agent sees only the
 // stand-in.
 export function prepareAgentCredentials(launchPlan, entropy) {
-  const routes = assertCredentialRoutes(launchPlan?.credentialRoutes, launchPlan?.env);
+  const declared = assertCredentialRoutes(launchPlan?.credentialRoutes, launchPlan?.env);
+  const declaredNames = new Set(declared.map(({ environmentName }) => environmentName));
+  const defaults = Object.entries(DEFAULT_AGENT_CREDENTIAL_ROUTES)
+    .filter(([name]) => (
+      !declaredNames.has(name)
+      && typeof launchPlan?.env?.[name] === "string"
+      && launchPlan.env[name].trim()
+    ))
+    .map(([environmentName, { hosts, headerNames }]) => ({ environmentName, hosts, headerNames }));
+  const routes = [...declared, ...defaults];
   return routes.map(({ environmentName, hosts, headerNames }) => {
     const value = launchPlan.env[environmentName];
     const surrogate = agentCredentialStandIn(value, entropy);
