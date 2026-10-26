@@ -46,8 +46,13 @@ retaining a result snapshot.
 The prompt instructs the Agent to make one model-list call and one completion
 call with at most 32 generated tokens and no retries. Those instructions are not
 a hard spending cap: the Agent could make additional calls. A required code
-check rejects extra completion attempts after execution. Edit
-`fixtures/request.json` to try another model.
+check rejects extra completion attempts after execution.
+
+The fixture uses the serverless `Qwen/Qwen3.5-9B` model with reasoning turned
+off, so the 32-token reply contains text rather than only reasoning tokens. Edit
+`fixtures/request.json` to try another model. Choose one from Together's
+[serverless catalog](https://docs.together.ai/docs/serverless/models); models
+that need a dedicated endpoint fail with HTTP 400.
 
 The checks require trusted, successful GET /v1/models and POST
 /v1/chat/completions evidence. Native Local cannot supply that evidence. Artifact
