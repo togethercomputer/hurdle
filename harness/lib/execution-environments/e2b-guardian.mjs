@@ -318,6 +318,45 @@ function capturePolicy(capture) {
   };
 }
 
+// The Agent's own model credentials ride a separate pass-through route: the
+// Guardian swaps in the real value for the declared hosts and streams the
+// exchange, but does not journal it. A host the Task also captures keeps its
+// capture route; the Agent credential is still substituted there.
+function agentCredentialPolicy(agentCredentials, captureHosts) {
+  if (
+    !Array.isArray(agentCredentials)
+    || agentCredentials.length > 8
+    || agentCredentials.some((credential) => (
+      !credential
+      || typeof credential.surrogate !== "string"
+      || !credential.surrogate
+      || typeof credential.value !== "string"
+      || !credential.value
+      || credential.surrogate === credential.value
+      || !Array.isArray(credential.hosts)
+      || credential.hosts.length === 0
+      || credential.hosts.some((host) => typeof host !== "string" || !host)
+      || !Array.isArray(credential.headerNames)
+      || credential.headerNames.length === 0
+      || credential.headerNames.some((name) => typeof name !== "string" || !name)
+    ))
+  ) {
+    throw new TypeError("Guardian Agent credential policy is invalid");
+  }
+  const capture = new Set(captureHosts);
+  const passthroughHosts = [...new Set(agentCredentials.flatMap(({ hosts }) => hosts))]
+    .filter((host) => !capture.has(host));
+  return {
+    passthroughHosts,
+    substitutions: agentCredentials.map(({ surrogate, value, hosts, headerNames }) => ({
+      surrogate,
+      value,
+      hosts: [...hosts],
+      headerNames: [...headerNames],
+    })),
+  };
+}
+
 async function waitForPort(sandbox, port, label, signal = undefined) {
   const result = await sandbox.commands.run(`python3 - <<'PY'
 import socket, time
@@ -566,6 +605,7 @@ export function createExternalGuardianController({
       credentialBindings,
       credentialValues,
       surrogates,
+      agentCredentials = [],
       profile,
       signal,
     }) {
@@ -578,7 +618,9 @@ export function createExternalGuardianController({
         exchangeFacts,
         blockedRequests,
       } = capturePolicy(capture);
-      const substitutions = credentialBindings
+      const agentPolicy = agentCredentialPolicy(agentCredentials, hosts);
+      const routedHosts = [...hosts, ...agentPolicy.passthroughHosts];
+      const targetSubstitutions = credentialBindings
         .filter(({ delivery }) => delivery.kind === "captured-http-header")
         .map(({ environmentName, delivery }) => ({
           surrogate: surrogates[environmentName],
@@ -586,12 +628,20 @@ export function createExternalGuardianController({
           hosts: delivery.hosts,
           headerNames: delivery.headerNames,
         }));
+      const agentStandIns = agentPolicy.substitutions.map(({ surrogate }) => surrogate);
+      if (
+        new Set(agentStandIns).size !== agentStandIns.length
+        || targetSubstitutions.some(({ surrogate }) => agentStandIns.includes(surrogate))
+      ) {
+        throw new TypeError("Guardian Agent credential stand-ins must be distinct");
+      }
+      const substitutions = [...targetSubstitutions, ...agentPolicy.substitutions];
       await installProxyRuntime(sandbox, signal);
       const caCertificate = await generateCa(sandbox, signal);
       const bridgeToken = randomBytes(32).toString("base64url");
       const controlToken = randomBytes(32).toString("base64url");
       await sandbox.updateNetwork({
-        allowOut: hosts,
+        allowOut: routedHosts,
         denyOut: ["0.0.0.0/0"],
       }, { signal });
       const proxyProcess = await sandbox.commands.run(
@@ -604,6 +654,7 @@ export function createExternalGuardianController({
             TAE_EGRESS_LOG: LOG_PATH,
             TAE_EGRESS_CONTROL_TOKEN: controlToken,
             TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(hosts),
+            TAE_EGRESS_PASSTHROUGH_HOSTS: JSON.stringify(agentPolicy.passthroughHosts),
             TAE_EGRESS_SELECTED_RESPONSE_HEADERS: JSON.stringify(
               selectedResponseHeaders,
             ),
@@ -637,6 +688,7 @@ export function createExternalGuardianController({
         controlToken,
         guardianHost: sandbox.getHost(BRIDGE_PORT),
         hosts,
+        routedHosts,
         policyFingerprint: exchangeFacts?.policyFingerprint ?? null,
         proxyProcess,
         relayProcess: null,
@@ -651,6 +703,9 @@ export function createExternalGuardianController({
           "Guardian requires restricted public traffic and a traffic access token",
         );
       }
+      // Firewall only the capture hosts: direct traffic to them would bypass
+      // evidence capture. A direct request to a pass-through host carries only
+      // a stand-in credential, so it fails authentication instead.
       await installWorkloadTrust(
         workload,
         session.caCertificate,
@@ -659,6 +714,9 @@ export function createExternalGuardianController({
         firewallSuffix,
         firewallVerdict,
       );
+      // The relay and the Agent's proxy bootstraps send every Guardian-routed
+      // host to the Guardian, both captured and pass-through.
+      const routedHosts = session.routedHosts ?? session.hosts;
       session.workload = workload;
       session.relayProcess = await workload.commands.run(
         `exec node ${BRIDGE_PATH} ${workloadBridgeMode}`,
@@ -674,7 +732,7 @@ export function createExternalGuardianController({
             EGRESS_BRIDGE_CELL_TOKEN: session.bridgeToken,
             EGRESS_BRIDGE_LISTEN_PORT: String(RELAY_PORT),
             EGRESS_BRIDGE_SELECTIVE_PROXY: "1",
-            TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(session.hosts),
+            TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(routedHosts),
             ...bridgeEnvironment(session),
           },
         },
@@ -689,10 +747,11 @@ export function createExternalGuardianController({
         REQUESTS_CA_BUNDLE: CA_BUNDLE_PATH,
         CURL_CA_BUNDLE: CA_BUNDLE_PATH,
         NODE_EXTRA_CA_CERTS: CA_BUNDLE_PATH,
+        CODEX_CA_CERTIFICATE: CA_BUNDLE_PATH,
         NODE_OPTIONS: `--require=${NODE_BOOTSTRAP_PATH}`,
         PYTHONPATH: PYTHON_ROOT,
         TAE_EGRESS_CA_BUNDLE: CA_BUNDLE_PATH,
-        TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(session.hosts),
+        TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(routedHosts),
         TAE_EGRESS_PROXY: `http://127.0.0.1:${RELAY_PORT}`,
       };
     },

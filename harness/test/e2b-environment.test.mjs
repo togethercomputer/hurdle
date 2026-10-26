@@ -105,6 +105,7 @@ function controlledRuntime(events, secret, {
 } = {}) {
   let nextId = 0;
   const resources = [];
+  const preparedAgentCredentials = [];
   const provider = {
     async acquire({ role, apiKey }) {
       const resource = {
@@ -177,8 +178,9 @@ function controlledRuntime(events, secret, {
     },
   };
   const guardian = {
-    async prepare({ capture, credentialBindings, credentialValues, surrogates }) {
+    async prepare({ capture, credentialBindings, credentialValues, surrogates, agentCredentials }) {
       events.push("prepare:guardian");
+      preparedAgentCredentials.push(...structuredClone(agentCredentials));
       assert.equal(capture.mode, "network-egress-metadata-v1");
       assert.deepEqual(capture.protocols, expectedCaptureProtocols);
       assert.deepEqual(capture.routes.map(({ host }) => host), [
@@ -226,7 +228,7 @@ function controlledRuntime(events, secret, {
       };
     },
   };
-  return { guardian, provider, resources };
+  return { guardian, provider, resources, preparedAgentCredentials };
 }
 
 test("E2B runs one canonical cell with Guardian-only Target credentials and terminal disposal", async (t) => {
@@ -304,6 +306,92 @@ test("E2B runs one canonical cell with Guardian-only Target credentials and term
   ]);
   assert.doesNotMatch(JSON.stringify(record), new RegExp(secret));
   assert.equal(record.evidence.egress[0].provenance.producer, "e2b-guardian");
+  // An adapter without credential routes keeps environment delivery.
+  assert.deepEqual(runtime.preparedAgentCredentials, []);
+});
+
+for (const [authName, credential, standInPrefix] of [
+  ["ANTHROPIC_API_KEY", "sk-ant-api03-fixture-claude-agent-key", "sk-ant-api03-"],
+  ["CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat01-fixture-claude-agent-token", "sk-ant-oat01-"],
+]) {
+  test(`E2B keeps Claude Code's ${authName} in the Guardian and gives the Agent a stand-in`, async (t) => {
+    const root = mkdtempSync(join(tmpdir(), "tae-claude-e2b-agent-credential-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const pack = await togetherRunPlan();
+    const store = await openLocalResultStore({ root: join(root, "results") });
+    const target = "faketarget-77c1-together";
+    let observedRun = null;
+    const runtime = controlledRuntime([], target, {
+      onRun(value) {
+        observedRun = value;
+      },
+    });
+    const environment = createE2BExecutionEnvironment({
+      apiKey: "claude-e2b-provider-secret",
+      provider: runtime.provider,
+      guardian: runtime.guardian,
+      entropy: () => "claude-e2b-entropy",
+    });
+    const engine = createRunEngine({
+      resultStore: store,
+      agentAdapter: createClaudeCodeAdapter({
+        runtimeEnv: { PATH: "/controller-only/bin", [authName]: credential },
+      }),
+      executionEnvironment: environment,
+    });
+
+    const result = await engine.run({
+      runPlan: pack,
+      taskIds: ["chat-app"],
+      conditionIds: ["baseline"],
+      credentials: { TOGETHER_API_KEY: target },
+    });
+
+    assert.notEqual(result.status, "invalid", JSON.stringify(result));
+    assert.ok(observedRun);
+    const standIn = `${standInPrefix}hurdle_agent_stand_in_claude-e2b-entropy`;
+    assert.equal(observedRun.environment[authName], standIn);
+    assert.doesNotMatch(JSON.stringify(observedRun.environment), new RegExp(credential));
+    assert.equal(observedRun.environment.TOGETHER_API_KEY, "tae_visible_claude-e2b-entropy");
+    assert.deepEqual(runtime.preparedAgentCredentials, [{
+      environmentName: authName,
+      surrogate: standIn,
+      value: credential,
+      hosts: ["api.anthropic.com"],
+      headerNames: ["x-api-key", "authorization"],
+    }]);
+    const record = await store.getRun(result.runs[0].id);
+    assert.doesNotMatch(JSON.stringify(record), new RegExp(credential));
+  });
+}
+
+test("E2B rejects malformed Agent credential routes before provider allocation", async () => {
+  let allocations = 0;
+  const runtime = controlledRuntime([], "target-secret");
+  runtime.provider.acquire = async () => {
+    allocations += 1;
+    throw new Error("must not allocate");
+  };
+  const environment = createE2BExecutionEnvironment({
+    apiKey: "e2b-test-key",
+    provider: runtime.provider,
+    guardian: runtime.guardian,
+  });
+
+  for (const credentialRoutes of [
+    [{ environmentName: "MISSING_KEY", hosts: ["api.example.com"], headerNames: ["authorization"] }],
+    [{ environmentName: "AGENT_KEY", hosts: ["API.EXAMPLE.COM"], headerNames: ["authorization"] }],
+    [{ environmentName: "AGENT_KEY", hosts: ["api.example.com"], headerNames: [] }],
+    [{ environmentName: "AGENT_KEY", hosts: ["api.example.com"], headerNames: ["authorization"], extra: true }],
+  ]) {
+    await assert.rejects(environment.execute({
+      capture: { mode: "none" },
+      workspaceArtifactMetadata: false,
+      credentialBindings: [],
+      launchPlan: { command: "agent", env: { AGENT_KEY: "agent-secret" }, credentialRoutes },
+    }), /Agent credential routes are invalid/);
+  }
+  assert.equal(allocations, 0);
 });
 
 test("Codex composes with E2B through the canonical Together path", async (t) => {
@@ -427,7 +515,19 @@ test("Codex composes with E2B through the canonical Together path", async (t) =>
     "-",
   ]);
   assert.match(observedRun.launchPlan.stdin, /Build a CLI tool/);
-  assert.equal(observedRun.environment.CODEX_API_KEY, secrets.codex);
+  // The real Codex key stays with the Guardian; the Agent's VM sees a stand-in.
+  assert.equal(
+    observedRun.environment.CODEX_API_KEY,
+    "hurdle_agent_stand_in_codex-e2b-surrogate",
+  );
+  assert.doesNotMatch(JSON.stringify(observedRun.environment), new RegExp(secrets.codex));
+  assert.deepEqual(runtime.preparedAgentCredentials, [{
+    environmentName: "CODEX_API_KEY",
+    surrogate: "hurdle_agent_stand_in_codex-e2b-surrogate",
+    value: secrets.codex,
+    hosts: ["api.openai.com"],
+    headerNames: ["authorization"],
+  }]);
   assert.equal(observedRun.environment.OPENAI_API_KEY, undefined);
   assert.equal(observedRun.environment.PATH, undefined);
   assert.equal(observedRun.environment.HOME, undefined);

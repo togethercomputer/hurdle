@@ -53,6 +53,15 @@ CAPTURE_HOSTS = frozenset(
     str(host).lower().rstrip(".")
     for host in json.loads(os.environ["TAE_EGRESS_CAPTURE_HOSTS"])
 )
+# Pass-through hosts carry the Agent's own model traffic. The Guardian swaps in
+# the real Agent credential and streams the exchange, but never journals it or
+# applies request policy: it is not evaluation evidence.
+PASSTHROUGH_HOSTS = frozenset(
+    str(host).lower().rstrip(".")
+    for host in json.loads(os.environ.get("TAE_EGRESS_PASSTHROUGH_HOSTS", "[]"))
+)
+if CAPTURE_HOSTS & PASSTHROUGH_HOSTS:
+    raise RuntimeError("capture and pass-through hosts overlap")
 SUBSTITUTIONS = tuple(json.loads(os.environ.get("TAE_EGRESS_SUBSTITUTIONS", "[]")))
 SELECTED_RESPONSE_HEADERS = {
     str(host).lower().rstrip("."): tuple(str(name).lower() for name in names)
@@ -313,6 +322,7 @@ class GenericGuardian:
         self.fact_exchanges = 0
         self._started: dict[str, float] = {}
         self._websockets: dict[str, dict[str, int]] = {}
+        self._passthrough: set[str] = set()
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         with open(LOG_PATH, "xb"):
             pass
@@ -356,10 +366,43 @@ class GenericGuardian:
         flow.response = http.Response.make(200, body, {"content-type": "application/json"})
         return True
 
+    @staticmethod
+    def _routes_to_host(flow: http.HTTPFlow, host: str) -> bool:
+        # Inside a CONNECT tunnel, request.host is the tunnel destination while
+        # pretty_host prefers the Host header. Swapping in a credential when
+        # they differ would send it to a different upstream than its route.
+        target = str(getattr(flow.request, "host", None) or host).lower().rstrip(".")
+        return target == host
+
+    @staticmethod
+    def _substitute(flow: http.HTTPFlow, host: str) -> None:
+        for binding in SUBSTITUTIONS:
+            if host not in binding.get("hosts", []):
+                continue
+            surrogate = str(binding.get("surrogate", ""))
+            value = str(binding.get("value", ""))
+            if not surrogate or not value:
+                continue
+            for header_name in binding.get("headerNames", []):
+                current = flow.request.headers.get(header_name)
+                if current is not None and surrogate in current:
+                    flow.request.headers[header_name] = current.replace(surrogate, value)
+
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         if self._control(flow):
             return
         host = (flow.request.pretty_host or "").lower().rstrip(".")
+        if host in PASSTHROUGH_HOSTS:
+            if not self._routes_to_host(flow, host):
+                flow.response = http.Response.make(403, b"pass-through route rejected")
+                return
+            if self.sealed:
+                flow.response = http.Response.make(503, b"capture sealed")
+                return
+            self._substitute(flow, host)
+            self._passthrough.add(flow.id)
+            flow.request.stream = True
+            return
         if host not in CAPTURE_HOSTS:
             flow.response = http.Response.make(403, b"capture route rejected")
             return
@@ -387,19 +430,16 @@ class GenericGuardian:
                 {"content-type": "text/plain; charset=utf-8"},
             )
             return
-        for binding in SUBSTITUTIONS:
-            if host not in binding.get("hosts", []):
-                continue
-            surrogate = str(binding.get("surrogate", ""))
-            value = str(binding.get("value", ""))
-            if not surrogate or not value:
-                continue
-            for header_name in binding.get("headerNames", []):
-                current = flow.request.headers.get(header_name)
-                if current is not None and surrogate in current:
-                    flow.request.headers[header_name] = current.replace(surrogate, value)
+        if self._routes_to_host(flow, host):
+            self._substitute(flow, host)
         self.active += 1
         self._started[flow.id] = time.monotonic()
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        # Model responses are long server-sent event streams; forward them as
+        # they arrive instead of buffering the whole body in the Guardian.
+        if flow.id in self._passthrough and flow.response is not None:
+            flow.response.stream = True
 
     def _append(self, observed: dict[str, object]) -> None:
         if self.sequence >= MAX_ROWS:
@@ -688,6 +728,10 @@ class GenericGuardian:
         if flow.request.pretty_host == CONTROL_HOST:
             return
         status_code = flow.response.status_code if flow.response else None
+        if flow.id in self._passthrough:
+            if status_code != 101:
+                self._passthrough.discard(flow.id)
+            return
         if status_code == 101:
             self._websockets.setdefault(flow.id, {
                 "framesSent": 0,
@@ -699,6 +743,8 @@ class GenericGuardian:
         self._finish_http(flow, status_code)
 
     def websocket_start(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._passthrough:
+            return
         self._websockets.setdefault(flow.id, {
             "framesSent": 0,
             "bytesSent": 0,
@@ -707,6 +753,8 @@ class GenericGuardian:
         })
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._passthrough:
+            return
         counters = self._websockets.get(flow.id)
         messages = getattr(getattr(flow, "websocket", None), "messages", ())
         if counters is None or not messages:
@@ -728,9 +776,15 @@ class GenericGuardian:
         counters[byte_key] += size
 
     def websocket_end(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._passthrough:
+            self._passthrough.discard(flow.id)
+            return
         self._finish_websocket(flow)
 
     def error(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._passthrough:
+            self._passthrough.discard(flow.id)
+            return
         if flow.id in self._websockets:
             self._drop_websocket(flow)
         else:

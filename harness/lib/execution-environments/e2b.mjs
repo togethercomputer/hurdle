@@ -14,6 +14,11 @@ import {
 } from "../execution-progress.mjs";
 import { deepFreeze, RunSelectionInputError } from "../run-model.mjs";
 import {
+  assertCredentialRoutes,
+  prepareAgentCredentials,
+  withAgentCredentialStandIns,
+} from "../agent-credential-routes.mjs";
+import {
   assertExchangeFactCapturePolicy,
   createE2BGuardianController,
 } from "./e2b-guardian.mjs";
@@ -166,6 +171,7 @@ export function validateSandboxEnvelope(envelope, providerName = "E2B") {
   if (typeof envelope.workspaceArtifactMetadata !== "boolean") {
     throw new TypeError(`${providerName} workspace metadata selection must be boolean`);
   }
+  assertCredentialRoutes(envelope.launchPlan?.credentialRoutes, envelope.launchPlan?.env);
   const routes = envelope.capture?.routes ?? [];
   const blockedRequests = envelope.capture?.blockedRequests ?? [];
   assertExchangeFactCapturePolicy(envelope.capture?.exchangeFacts);
@@ -402,6 +408,9 @@ export function createE2BExecutionEnvironment({
                   : credentialValues[environmentName],
               ]),
             );
+            // The Agent's own model credential stays with the Guardian too:
+            // the workload receives a stand-in on every turn.
+            const agentCredentials = prepareAgentCredentials(envelope.launchPlan, entropy);
             phase = "setup";
             guardianSession = await guardian.prepare({
               sandbox: capture,
@@ -409,6 +418,7 @@ export function createE2BExecutionEnvironment({
               credentialBindings: envelope.credentialBindings,
               credentialValues,
               surrogates,
+              agentCredentials,
               profile: settings.captureProfile,
               signal: envelope.signal,
             });
@@ -502,7 +512,10 @@ export function createE2BExecutionEnvironment({
                         timeoutMs: Math.min(plan.timeoutMs ?? remainingMs, remainingMs),
                       },
                       environment: {
-                        ...sandboxLaunchEnvironment(plan.env),
+                        ...sandboxLaunchEnvironment(withAgentCredentialStandIns(
+                          plan,
+                          agentCredentials,
+                        )),
                         ...surrogates,
                         ...(guardianSession.workloadEnvironment ?? {}),
                       },

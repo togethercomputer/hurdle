@@ -141,6 +141,205 @@ print(json.dumps(state, separators=(",", ":")))
   });
 });
 
+test("generic E2B Guardian swaps the Agent credential on pass-through hosts without journaling", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-pass-through-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const journal = join(root, "requests.jsonl");
+  const agentSecret = "sk-ant-api03-real-agent-secret";
+  const agentStandIn = "sk-ant-api03-hurdle_agent_stand_in_fixture";
+  const targetSecret = "real-target-secret";
+  const targetStandIn = "tae_visible_target";
+  const script = String.raw`
+import json, os, runpy, sys, types
+
+class Response:
+    @staticmethod
+    def make(status, content=b"", headers=None):
+        return types.SimpleNamespace(status_code=status, content=content, headers=headers or {}, stream=False)
+
+mitmproxy = types.ModuleType("mitmproxy")
+mitmproxy.http = types.SimpleNamespace(HTTPFlow=object, Response=Response)
+sys.modules["mitmproxy"] = mitmproxy
+module = runpy.run_path(os.environ["GUARDIAN_PATH"])
+addon = module["addons"][0]
+agent_secret = os.environ["AGENT_SECRET"]
+agent_stand_in = os.environ["AGENT_STAND_IN"]
+target_secret = os.environ["TARGET_SECRET"]
+target_stand_in = os.environ["TARGET_STAND_IN"]
+
+def flow(flow_id, host, path, headers=None, target=None, method="post"):
+    request = types.SimpleNamespace(
+        pretty_host=host,
+        host=target or host,
+        path=path,
+        method=method,
+        scheme="https",
+        headers=headers or {},
+        stream=False,
+    )
+    return types.SimpleNamespace(
+        id=flow_id,
+        request=request,
+        response=None,
+        websocket=types.SimpleNamespace(messages=[]),
+    )
+
+def control(action):
+    request = flow("control-" + action, "tae-egress-control.invalid", "/__tae_egress_control__/" + action, {
+        "x-tae-egress-control": os.environ["TAE_EGRESS_CONTROL_TOKEN"],
+    })
+    addon.requestheaders(request)
+    return json.loads(request.response.content)
+
+# Model traffic: the stand-in becomes the real key, both directions stream,
+# request policy does not apply, and nothing is counted or journaled.
+model = flow("model", "API.ANTHROPIC.COM.", "/v1/messages", {
+    "x-api-key": agent_stand_in,
+    "authorization": "Bearer " + agent_stand_in,
+    "x-other": agent_stand_in,
+}, target="api.anthropic.com")
+addon.requestheaders(model)
+assert model.response is None
+assert model.request.stream is True
+assert model.request.headers["x-api-key"] == agent_secret
+assert model.request.headers["authorization"] == "Bearer " + agent_secret
+assert model.request.headers["x-other"] == agent_stand_in
+assert control("status")["activeFlows"] == 0
+model.response = Response.make(200, headers={"content-type": "text/event-stream"})
+addon.responseheaders(model)
+assert model.response.stream is True
+addon.response(model)
+
+# A Host header that disagrees with the tunnel destination never receives a
+# credential and is rejected on a pass-through route.
+confused = flow("confused", "api.anthropic.com", "/v1/messages", {
+    "x-api-key": agent_stand_in,
+}, target="api.example.com")
+addon.requestheaders(confused)
+assert confused.response.status_code == 403
+assert confused.request.headers["x-api-key"] == agent_stand_in
+
+# Credentials stay scoped to their own hosts, and a captured exchange whose
+# Host header disagrees with its destination is journaled without a swap.
+crossed = flow("crossed", "api.example.com", "/v1/chat", {
+    "authorization": "Bearer " + agent_stand_in,
+})
+addon.requestheaders(crossed)
+assert crossed.request.headers["authorization"] == "Bearer " + agent_stand_in
+crossed.response = Response.make(200)
+addon.response(crossed)
+mismatched = flow("mismatched", "api.example.com", "/v1/chat", {
+    "authorization": "Bearer " + target_stand_in,
+}, target="api.anthropic.com")
+addon.requestheaders(mismatched)
+assert mismatched.request.headers["authorization"] == "Bearer " + target_stand_in
+mismatched.response = Response.make(200)
+addon.response(mismatched)
+
+# A pass-through WebSocket neither counts frames nor truncates the journal.
+socket = flow("socket", "api.anthropic.com", "/v1/realtime", {
+    "authorization": "Bearer " + agent_stand_in,
+}, method="get")
+addon.requestheaders(socket)
+assert socket.request.headers["authorization"] == "Bearer " + agent_secret
+socket.response = Response.make(101)
+addon.response(socket)
+addon.websocket_start(socket)
+socket.websocket.messages.append(types.SimpleNamespace(from_client=True, content=b"frame"))
+addon.websocket_message(socket)
+addon.websocket_end(socket)
+
+failed = flow("failed", "api.anthropic.com", "/v1/messages", {"x-api-key": agent_stand_in})
+addon.requestheaders(failed)
+addon.error(failed)
+
+state = control("seal")
+assert state["sealed"] is True
+assert state["activeFlows"] == 0
+assert state["rowCount"] == 2
+assert state["truncated"] is False
+late = flow("late", "api.anthropic.com", "/v1/messages", {"x-api-key": agent_stand_in})
+addon.requestheaders(late)
+assert late.response.status_code == 503
+assert late.request.headers["x-api-key"] == agent_stand_in
+assert addon._passthrough == set()
+`;
+  const result = spawnSync("python3", ["-c", script], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GUARDIAN_PATH: guardianPath.pathname,
+      AGENT_SECRET: agentSecret,
+      AGENT_STAND_IN: agentStandIn,
+      TARGET_SECRET: targetSecret,
+      TARGET_STAND_IN: targetStandIn,
+      TAE_EGRESS_LOG: journal,
+      TAE_EGRESS_CONTROL_TOKEN: "control-token",
+      TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(["api.example.com"]),
+      TAE_EGRESS_PASSTHROUGH_HOSTS: JSON.stringify(["api.anthropic.com"]),
+      TAE_EGRESS_SELECTED_RESPONSE_HEADERS: JSON.stringify({}),
+      TAE_EGRESS_BLOCKED_REQUESTS: JSON.stringify([{
+        id: "no-messages",
+        method: "POST",
+        path: "/v1/messages",
+      }]),
+      TAE_EGRESS_SUBSTITUTIONS: JSON.stringify([
+        {
+          surrogate: targetStandIn,
+          value: targetSecret,
+          hosts: ["api.example.com"],
+          headerNames: ["authorization"],
+        },
+        {
+          surrogate: agentStandIn,
+          value: agentSecret,
+          hosts: ["api.anthropic.com"],
+          headerNames: ["x-api-key", "authorization"],
+        },
+      ]),
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const contents = readFileSync(journal, "utf8");
+  assert.doesNotMatch(contents, new RegExp(`${agentSecret}|${targetSecret}|anthropic`));
+  assert.deepEqual(
+    contents.trim().split("\n").map((line) => {
+      const { host, path, statusCode } = JSON.parse(line);
+      return { host, path, statusCode };
+    }),
+    [
+      { host: "api.example.com", path: "/v1/chat", statusCode: 200 },
+      { host: "api.example.com", path: "/v1/chat", statusCode: 200 },
+    ],
+  );
+});
+
+test("generic E2B Guardian refuses a host that is both captured and pass-through", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-overlap-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const script = String.raw`
+import os, runpy, sys, types
+mitmproxy = types.ModuleType("mitmproxy")
+mitmproxy.http = types.SimpleNamespace(HTTPFlow=object, Response=object)
+sys.modules["mitmproxy"] = mitmproxy
+runpy.run_path(os.environ["GUARDIAN_PATH"])
+`;
+  const result = spawnSync("python3", ["-c", script], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GUARDIAN_PATH: guardianPath.pathname,
+      TAE_EGRESS_LOG: join(root, "requests.jsonl"),
+      TAE_EGRESS_CONTROL_TOKEN: "control-token",
+      TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(["api.anthropic.com"]),
+      TAE_EGRESS_PASSTHROUGH_HOSTS: JSON.stringify(["api.anthropic.com"]),
+    },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /capture and pass-through hosts overlap/);
+});
+
 test("generic E2B Guardian projects bounded JSON facts without retaining bodies", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-facts-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -987,6 +1186,198 @@ test("generic E2B Guardian prepares a checksum-pinned Python 3.12 proxy runtime"
     "api.example.com",
   ]);
   assert.deepEqual(workloadNetworkUpdates, []);
+});
+
+function fakeGuardianSandboxes() {
+  let nextPid = 100;
+  const guardianCommands = [];
+  const networkUpdates = [];
+  const workloadCommands = [];
+  const runner = (commands) => ({
+    async run(command, options = {}) {
+      commands.push({ command, options });
+      if (options.background) return { pid: nextPid++, async kill() {} };
+      return {
+        stdout: command.includes("socket.create_connection") ? "READY\n" : "",
+        stderr: "",
+        exitCode: 0,
+      };
+    },
+    async list() {
+      return [];
+    },
+  });
+  const sandbox = {
+    commands: runner(guardianCommands),
+    files: {
+      async write() {},
+      async read() {
+        return "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n";
+      },
+    },
+    async updateNetwork(network) {
+      networkUpdates.push(network);
+    },
+    getHost(port) {
+      return `guardian-${port}.example.invalid`;
+    },
+    trafficAccessToken: "fixture-traffic-token",
+  };
+  const workload = {
+    commands: runner(workloadCommands),
+    files: { async write() {} },
+  };
+  return { sandbox, workload, guardianCommands, networkUpdates, workloadCommands };
+}
+
+const anthropicAgentCredential = Object.freeze({
+  surrogate: "sk-ant-api03-hurdle_agent_stand_in_fixture",
+  value: "sk-ant-api03-real-agent-secret",
+  hosts: ["api.anthropic.com"],
+  headerNames: ["x-api-key", "authorization"],
+});
+
+test("generic E2B Guardian routes the Agent credential through a pass-through host", async () => {
+  const fake = fakeGuardianSandboxes();
+  const guardian = createE2BGuardianController();
+  const session = await guardian.prepare({
+    sandbox: fake.sandbox,
+    profile: "external-guardian-http-metadata-v1",
+    capture: {
+      mode: "network-egress-metadata-v1",
+      protocols: ["https"],
+      routes: [{ host: "api.example.com", selectedFields: [] }],
+    },
+    credentialBindings: [{
+      id: "credential:TARGET_KEY",
+      environmentName: "TARGET_KEY",
+      delivery: {
+        kind: "captured-http-header",
+        hosts: ["api.example.com"],
+        headerNames: ["authorization"],
+      },
+    }],
+    credentialValues: { TARGET_KEY: "real-target-secret" },
+    surrogates: { TARGET_KEY: "tae_visible_target" },
+    agentCredentials: [anthropicAgentCredential],
+  });
+
+  assert.deepEqual(fake.networkUpdates, [{
+    allowOut: ["api.example.com", "api.anthropic.com"],
+    denyOut: ["0.0.0.0/0"],
+  }]);
+  const proxy = fake.guardianCommands.find(({ command }) => command.includes("mitmdump -q -s"));
+  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_CAPTURE_HOSTS), ["api.example.com"]);
+  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_PASSTHROUGH_HOSTS), ["api.anthropic.com"]);
+  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_SUBSTITUTIONS), [
+    {
+      surrogate: "tae_visible_target",
+      value: "real-target-secret",
+      hosts: ["api.example.com"],
+      headerNames: ["authorization"],
+    },
+    anthropicAgentCredential,
+  ]);
+  assert.deepEqual(session.hosts, ["api.example.com"]);
+
+  await guardian.attach({ workload: fake.workload, sandbox: fake.sandbox, session });
+  const relay = fake.workloadCommands.find(({ command }) => command.includes("tcp_ws_bridge.cjs client"));
+  assert.deepEqual(JSON.parse(relay.options.envs.TAE_EGRESS_CAPTURE_HOSTS), [
+    "api.example.com",
+    "api.anthropic.com",
+  ]);
+  assert.deepEqual(JSON.parse(session.workloadEnvironment.TAE_EGRESS_CAPTURE_HOSTS), [
+    "api.example.com",
+    "api.anthropic.com",
+  ]);
+  assert.equal(session.workloadEnvironment.CODEX_CA_CERTIFICATE, "/tmp/tae-egress/ca-bundle.pem");
+  const firewall = fake.workloadCommands.find(({ command }) => command.includes("socket.getaddrinfo"));
+  assert.deepEqual(JSON.parse(firewall.options.envs.TAE_CAPTURE_HOSTS), ["api.example.com"]);
+  const workloadText = JSON.stringify([
+    ...fake.workloadCommands.map(({ command, options }) => ({ command, envs: options.envs })),
+    session.workloadEnvironment,
+  ]);
+  assert.doesNotMatch(workloadText, /real-agent-secret|real-target-secret/);
+});
+
+test("generic E2B Guardian keeps a captured host on its capture route for the Agent credential", async () => {
+  const fake = fakeGuardianSandboxes();
+  const session = await createE2BGuardianController().prepare({
+    sandbox: fake.sandbox,
+    profile: "external-guardian-http-metadata-v1",
+    capture: {
+      mode: "network-egress-metadata-v1",
+      protocols: ["https"],
+      routes: [{ host: "api.anthropic.com", selectedFields: [] }],
+    },
+    credentialBindings: [],
+    credentialValues: {},
+    surrogates: {},
+    agentCredentials: [anthropicAgentCredential],
+  });
+  const proxy = fake.guardianCommands.find(({ command }) => command.includes("mitmdump -q -s"));
+  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_PASSTHROUGH_HOSTS), []);
+  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_SUBSTITUTIONS), [anthropicAgentCredential]);
+  assert.deepEqual(session.routedHosts, ["api.anthropic.com"]);
+});
+
+test("generic E2B Guardian protects the Agent credential when the Task captures nothing", async () => {
+  const fake = fakeGuardianSandboxes();
+  const session = await createE2BGuardianController().prepare({
+    sandbox: fake.sandbox,
+    profile: "external-guardian-http-metadata-v1",
+    capture: { mode: "none" },
+    credentialBindings: [],
+    credentialValues: {},
+    surrogates: {},
+    agentCredentials: [anthropicAgentCredential],
+  });
+  assert.deepEqual(fake.networkUpdates, [{
+    allowOut: ["api.anthropic.com"],
+    denyOut: ["0.0.0.0/0"],
+  }]);
+  assert.deepEqual(session.hosts, []);
+  assert.deepEqual(session.routedHosts, ["api.anthropic.com"]);
+});
+
+test("generic E2B Guardian rejects invalid or colliding Agent credential stand-ins", async () => {
+  const prepare = (agentCredentials, surrogates = {}) => createE2BGuardianController().prepare({
+    sandbox: fakeGuardianSandboxes().sandbox,
+    profile: "external-guardian-http-metadata-v1",
+    capture: {
+      mode: "network-egress-metadata-v1",
+      protocols: ["https"],
+      routes: [{ host: "api.example.com", selectedFields: [] }],
+    },
+    credentialBindings: Object.keys(surrogates).map((name) => ({
+      id: `credential:${name}`,
+      environmentName: name,
+      delivery: {
+        kind: "captured-http-header",
+        hosts: ["api.example.com"],
+        headerNames: ["authorization"],
+      },
+    })),
+    credentialValues: Object.fromEntries(Object.keys(surrogates).map((name) => [name, "target"])),
+    surrogates,
+    agentCredentials,
+  });
+  await assert.rejects(
+    prepare([anthropicAgentCredential], { TARGET_KEY: anthropicAgentCredential.surrogate }),
+    /stand-ins must be distinct/,
+  );
+  await assert.rejects(
+    prepare([anthropicAgentCredential, { ...anthropicAgentCredential, value: "other" }]),
+    /stand-ins must be distinct/,
+  );
+  await assert.rejects(
+    prepare([{ ...anthropicAgentCredential, value: anthropicAgentCredential.surrogate }]),
+    /Agent credential policy is invalid/,
+  );
+  await assert.rejects(
+    prepare([{ ...anthropicAgentCredential, hosts: [] }]),
+    /Agent credential policy is invalid/,
+  );
 });
 
 test("generic E2B Guardian rejects attach without restricted public traffic", async () => {

@@ -51,7 +51,8 @@ node harness/bin/hurdle.mjs run examples/copy-message/example.suite.mjs --view
 ```
 
 Setup uses E2B by default: it builds or reuses the Agent template and saves the
-Runtime. E2B runs each cell with a workload VM and a Guardian VM. Add
+Runtime. E2B runs each cell with a workload VM and a Guardian VM; the Agent's
+own API key stays in the Guardian and the workload sees only a stand-in. Add
 `--sandbox together` to setup to use Together sandbox instead; it builds or
 reuses an Agent snapshot, and copy-message uses only an Agent VM there. Agent
 inference, image builds, and sandbox use may be billed.

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_RUN_CONCURRENCY, mapConcurrentRunCells, normalizeRunConcurrency } from "./run-concurrency.mjs";
+import { credentialRoutesAreValid } from "./agent-credential-routes.mjs";
 
 import { runDeterministicEvaluator } from "./evaluator-runtime.mjs";
 import { evaluateAuthority } from "./evaluation-authority.mjs";
@@ -480,6 +481,8 @@ function assertValidLaunchPlan(launchPlan) {
     || launchPlan.stdin instanceof Uint8Array;
   const timeoutValid = launchPlan?.timeoutMs === undefined
     || (Number.isSafeInteger(launchPlan.timeoutMs) && launchPlan.timeoutMs > 0);
+  const credentialRoutesValid = envValid
+    && credentialRoutesAreValid(launchPlan?.credentialRoutes, launchPlan?.env);
   const workspaceFilesValid = launchPlan?.workspaceFiles === undefined || (
     Array.isArray(launchPlan.workspaceFiles)
     && launchPlan.workspaceFiles.every((file) => (
@@ -517,6 +520,7 @@ function assertValidLaunchPlan(launchPlan) {
     || !envValid
     || !stdinValid
     || !timeoutValid
+    || !credentialRoutesValid
     || !workspaceFilesValid
     || !workspaceLayoutValid
   ) {

@@ -33,6 +33,19 @@ function selectedCodexEnvironment(runtimeEnv) {
   return selected;
 }
 
+// Codex sends an API key as a bearer token only to the OpenAI API. A ChatGPT
+// access token is read and refreshed by Codex itself, so a stand-in cannot
+// replace it; it keeps environment delivery.
+function codexCredentialRoutes(environment) {
+  return isNonblankString(environment.CODEX_API_KEY)
+    ? [{
+        environmentName: "CODEX_API_KEY",
+        hosts: ["api.openai.com"],
+        headerNames: ["authorization"],
+      }]
+    : [];
+}
+
 function secretValues(runtimeEnv) {
   return [...new Set([
     runtimeEnv.CODEX_ACCESS_TOKEN,
@@ -197,6 +210,7 @@ export function createCodexAdapter({
     throw new TypeError("Codex timeoutMs must be a positive safe integer");
   }
   const environment = deepFreeze(selectedCodexEnvironment(runtimeEnv));
+  const credentialRoutes = deepFreeze(codexCredentialRoutes(environment));
   const secrets = secretValues(runtimeEnv);
   return Object.freeze({
     id: "codex",
@@ -239,6 +253,7 @@ export function createCodexAdapter({
           "-",
         ],
         env: environment,
+        credentialRoutes,
         stdin: prompt,
         timeoutMs,
         workspaceFiles: workspaceFiles(resources),

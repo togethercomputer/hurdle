@@ -87,6 +87,8 @@ test("Codex Adapter creates a bounded launch plan from normalized settings", () 
       HOME: "/test/home",
       CODEX_ACCESS_TOKEN: "selected-access-token",
     },
+    // An access token is refreshed by Codex itself, so it is not routed.
+    credentialRoutes: [],
     stdin: "Copy the fixture.",
     timeoutMs: 5_000,
     workspaceFiles: [],

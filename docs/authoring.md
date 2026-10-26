@@ -351,3 +351,9 @@ Local runs execute Agent code on the host and are not a security sandbox. Use
 a Runtime configured for E2B or Together sandbox for isolation and trusted
 HTTP/tool evidence.
 See [sandbox setup](./sandbox-setup.md).
+
+On E2B, the Agent's own Anthropic or OpenAI API key and, for a Task with
+required request or tool checks or guards, the Suite's `authorizationCredential`
+stay in the Guardian; the Agent sees only a stand-in. See
+[where credentials live](./sandbox-setup.md#where-credentials-live) for every
+credential and environment.

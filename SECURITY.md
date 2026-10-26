@@ -24,3 +24,10 @@ Native Local runs execute Agent code on the host with network access. They are
 not a security sandbox. The filesystem Result Store and loopback Viewer are the
 default preview path; E2B and Postgres remain opt-in beta backends. See the
 [authoring guide](docs/authoring.md) for credential and evidence boundaries.
+
+Sandbox runs do not keep every credential out of the Agent's VM. E2B keeps the
+Agent's Anthropic or OpenAI API key, and a Task's captured API credential, in the
+Guardian. A Codex ChatGPT access token, an uncaptured Task credential, and any
+Agent credential on Together sandbox are readable inside the Agent's VM.
+[Where credentials live](docs/sandbox-setup.md#where-credentials-live) lists
+each case.

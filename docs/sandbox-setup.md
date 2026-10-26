@@ -147,6 +147,33 @@ The Agent runs inside the sandbox, so no local CLI installation is needed.
 Setup checks credentials and image access; model access and remote tools are
 checked during execution. Existing configured limits are preserved.
 
+## Where credentials live
+
+The table shows where each real credential is held. Where it says Guardian
+only, the Agent receives a random stand-in value and the Guardian swaps in the
+real key only on requests to that key's own hosts, after TLS verification; a
+stand-in the Agent prints or sends elsewhere is useless. Anything held in the
+Agent VM or Agent process can be read by Agent code and by anything a prompt
+persuades the Agent to run.
+
+| Credential | E2B | Together sandbox | Local |
+| --- | --- | --- | --- |
+| Suite `api.authorizationCredential`, for a Task with required request or tool checks or guards | Guardian only | Guardian only | Not supported |
+| Suite `api.authorizationCredential`, for other Tasks | Agent VM | Agent VM | Agent process |
+| `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` | Guardian only | Agent VM | Agent process |
+| `CODEX_API_KEY` or `OPENAI_API_KEY` | Guardian only | Agent VM | Agent process |
+| `CODEX_ACCESS_TOKEN` | Agent VM | Agent VM | Agent process |
+| `E2B_API_KEY`, Together sandbox key, Judge key | Controller only | Controller only | Controller only |
+
+On E2B, the Agent's own model traffic to `api.anthropic.com` or
+`api.openai.com` passes through the Guardian on a separate route: the Guardian
+swaps in the key and streams the exchange, but does not record it as evidence or
+apply `guard.mjs` rules to it. The Agent can still use its model, and code it
+writes can call that API through the Guardian, during the run; it cannot take
+the key out of the run. Codex reads and refreshes a ChatGPT access token itself,
+so `CODEX_ACCESS_TOKEN` cannot use a stand-in; use an API key when the Agent's
+key must stay out of the sandbox.
+
 ## Use Postgres for results
 
 Connect an existing Postgres database, such as Neon, from your evaluation project:
@@ -246,7 +273,9 @@ API tasks use a ten-minute lifetime and a separate Guardian VM. Artifact tasks
 deny all inbound workload application ports; API tasks expose one root-owned,
 per-cell-authenticated relay port. The management Agent port remains authenticated
 by Together and, during API capture, is blocked for the evaluated Linux user. The sandbox-management key is kept in the controller and is not
-injected into the evaluated Agent's environment.
+injected into the evaluated Agent's environment. The Agent's own model
+credential is still injected into the Agent VM on Together sandbox; see
+[where credentials live](#where-credentials-live).
 
 Run the API example with the same setup/run flow:
 

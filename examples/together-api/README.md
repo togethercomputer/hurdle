@@ -41,7 +41,9 @@ firewall tools. It uses a separate Guardian VM for the same trusted HTTP activit
 selected response headers, request blocking, and bounded exchange facts as E2B.
 New Together API runtimes use a ten-minute lifetime per VM. The real target key
 stays in the Guardian; the Agent receives a surrogate. Both VMs terminate without
-retaining a result snapshot.
+retaining a result snapshot. On E2B the Agent's own Anthropic or OpenAI API key
+also stays in the Guardian; on Together sandbox the Agent VM still holds it. See
+[where credentials live](../../docs/sandbox-setup.md#where-credentials-live).
 
 The prompt instructs the Agent to make one model-list call and one completion
 call with at most 32 generated tokens and no retries. Those instructions are not

@@ -80,6 +80,19 @@ function secretValues(runtimeEnv) {
     .sort((left, right) => right.length - left.length);
 }
 
+// Claude Code sends an API key as x-api-key and an OAuth token as a bearer
+// token, both only to the Anthropic API. A sandbox Guardian uses this to keep
+// the real value out of the Agent's VM.
+function claudeCredentialRoutes(environment) {
+  return ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+    .filter((name) => typeof environment[name] === "string" && environment[name].trim())
+    .map((environmentName) => ({
+      environmentName,
+      hosts: ["api.anthropic.com"],
+      headerNames: ["x-api-key", "authorization"],
+    }));
+}
+
 function workspaceFiles(
   resources = { skills: [], mcpServers: [] },
   { legacyC52 = false } = {},
@@ -125,6 +138,7 @@ export function createClaudeCodeAdapter({
       ? "oauth"
       : "none";
   const environment = explicitClaudeEnvironment(runtimeEnv);
+  const credentialRoutes = claudeCredentialRoutes(environment);
   const secrets = secretValues(runtimeEnv);
   const continuationHandles = new WeakMap();
   const baseArgs = [
@@ -230,6 +244,7 @@ export function createClaudeCodeAdapter({
             ...environment,
             CLI_VERSION: LEGACY_C52_TOGETHER_CLI_VERSION,
           },
+          credentialRoutes,
           stdin: prompt,
           timeoutMs,
           workspaceFiles: workspaceFiles(resources, { legacyC52: true }),
@@ -248,6 +263,7 @@ export function createClaudeCodeAdapter({
           "-p",
         ],
         env: environment,
+        credentialRoutes,
         stdin: prompt,
         timeoutMs,
         workspaceFiles: workspaceFiles(resources),
@@ -275,6 +291,7 @@ export function createClaudeCodeAdapter({
           "-p",
         ],
         env: environment,
+        credentialRoutes,
         stdin: prompt,
         timeoutMs,
         workspaceFiles: [],

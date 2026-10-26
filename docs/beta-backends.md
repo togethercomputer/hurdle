@@ -170,4 +170,6 @@ Runtime API. Run `hurdle setup --sandbox together --yes` for an artifact-only
 Suite, or initialize `together` / `together-postgres` with `--snapshot ALIAS`.
 Read [Together sandbox setup and limitations](./sandbox-setup.md#together-sandbox)
 before use. Together API Suites use a separate Guardian VM for the same trusted
-capture, request blocking and credential substitution as E2B.
+capture, request blocking and Task credential substitution as E2B. Unlike E2B,
+Together sandbox still places the Agent's own model credential in the Agent VM;
+see [where credentials live](./sandbox-setup.md#where-credentials-live).
