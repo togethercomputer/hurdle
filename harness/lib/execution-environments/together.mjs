@@ -15,6 +15,7 @@ import { createTogetherProvider } from "./together-provider.mjs";
 import { createTogetherSocketProvider } from "./together-socket-provider.mjs";
 import { randomBytes } from "node:crypto";
 import { validateSandboxEnvelope } from "./e2b.mjs";
+import { sealCredentialBindings } from "../sealed-credential-delivery.mjs";
 import {
   agentCredentialStandIn,
   prepareAgentCredentials,
@@ -107,33 +108,6 @@ export function agentCredentialSurrogate(value) {
   return agentCredentialStandIn(value, defaultEntropy);
 }
 
-// A Hurdle sandbox holds no secrets. A credential the task declared for
-// environment delivery, which authoring does for a Suite whose checks are
-// advisory, is delivered through the Guardian instead: swapped into the
-// Authorization header on the task's own API hosts, exactly as a required
-// check would have declared. Without API hosts there is nowhere to swap it,
-// so the run is refused with a reason the operator sees.
-function sealedCredentialBindings(envelope) {
-  const hosts = envelope.capture.mode === "none"
-    ? []
-    : envelope.capture.routes.map(({ host }) => host);
-  const sealed = [];
-  const exposed = [];
-  for (const binding of envelope.credentialBindings) {
-    if (binding.delivery.kind === "captured-http-header" || hosts.length === 0) {
-      sealed.push(binding);
-      if (binding.delivery.kind !== "captured-http-header") exposed.push(binding.environmentName);
-      continue;
-    }
-    sealed.push({ ...binding, delivery: { kind: "captured-http-header", hosts: [...hosts], headerNames: ["authorization"] } });
-  }
-  if (exposed.length) {
-    const message = `Together sandboxes receive credentials only through the Guardian; the Suite declares no API hosts to carry ${exposed.join(", ")}`;
-    throw Object.assign(new TypeError(message), { operatorReason: message });
-  }
-  return Object.freeze(sealed);
-}
-
 function noEgress(reason = "unsupported-platform") {
   return {
     status: "unavailable",
@@ -218,7 +192,7 @@ export function createTogetherExecutionEnvironment({
       const settings = normalizeTogetherSettings(envelope.settings, normalizedDefaults);
       const provider = providerFor(settings);
       const credentialBindings = provider.sealedOnly
-        ? sealedCredentialBindings(envelope)
+        ? sealCredentialBindings(envelope, { sandboxName: "Together" })
         : envelope.credentialBindings;
       return withExecutionCredentialValues(
         envelope,

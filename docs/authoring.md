@@ -352,8 +352,10 @@ a Runtime configured for E2B or Together sandbox for isolation and trusted
 HTTP/tool evidence.
 See [sandbox setup](./sandbox-setup.md).
 
-In E2B and Together sandboxes, the Agent's own model credential and, for a Task
-with required request or tool checks or guards, the Suite's
-`authorizationCredential` stay in the Guardian; the Agent sees only a stand-in. See
+In E2B and Together sandboxes, the Agent's own model credential and the Suite's
+`authorizationCredential` stay in the Guardian, whatever the Task's checks; the
+Agent sees only a stand-in. On a Together Runtime that names a `snapshotAlias`,
+the Suite's credential stays in the Guardian only for a Task with required
+request or tool checks or guards. See
 [where credentials live](./sandbox-setup.md#where-credentials-live) for every
 credential and environment.

@@ -23,6 +23,7 @@ import {
   createE2BGuardianController,
 } from "./e2b-guardian.mjs";
 import { createE2BProvider } from "./e2b-provider.mjs";
+import { sealCredentialBindings } from "../sealed-credential-delivery.mjs";
 
 const DEFAULT_SETTINGS = Object.freeze({
   captureProfile: "external-guardian-http-metadata-v1",
@@ -353,6 +354,10 @@ export function createE2BExecutionEnvironment({
       if (envelope.workspaceArtifactMetadata && !workspaceArtifactMetadataSupported) {
         throw new TypeError("E2B workspace artifact metadata is unsupported by this provider");
       }
+      // Every E2B run has a Guardian, so every Task credential goes through
+      // it, whatever the Task's checks: the workload holds only stand-ins.
+      // Native Local has no Guardian and keeps environment delivery.
+      const credentialBindings = sealCredentialBindings(envelope, { sandboxName: "E2B" });
       return withExecutionCredentialValues(envelope, async (credentialValues) => {
         const settings = normalizeSettings(envelope.settings, normalizedDefaults);
         const stdout = createBoundedControllerCapture(captureMaxBytes);
@@ -401,7 +406,7 @@ export function createE2BExecutionEnvironment({
             });
             requireActive(envelope.signal);
             const surrogates = Object.fromEntries(
-              envelope.credentialBindings.map(({ environmentName, delivery }) => [
+              credentialBindings.map(({ environmentName, delivery }) => [
                 environmentName,
                 delivery.kind === "captured-http-header"
                   ? surrogateValue(entropy)
@@ -415,7 +420,7 @@ export function createE2BExecutionEnvironment({
             guardianSession = await guardian.prepare({
               sandbox: capture,
               capture: envelope.capture,
-              credentialBindings: envelope.credentialBindings,
+              credentialBindings,
               credentialValues,
               surrogates,
               agentCredentials,

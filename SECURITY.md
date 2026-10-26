@@ -25,9 +25,10 @@ not a security sandbox. The filesystem Result Store and loopback Viewer are the
 default preview path; E2B and Postgres remain opt-in beta backends. See the
 [authoring guide](docs/authoring.md) for credential and evidence boundaries.
 
-Sandbox runs keep the Agent's own model credential, and a Task's captured API
-credential, in the Guardian; the Agent's VM holds only stand-ins. A Task
-credential that is not captured is readable inside the Agent's VM on E2B and on
-a Together Runtime that names a `snapshotAlias`.
+Sandbox runs keep the Agent's own model credential and the Suite's API
+credential in the Guardian; the Agent's VM holds only stand-ins. The one
+exception is a Together Runtime that names a `snapshotAlias`: there, a Suite's API
+credential for a Task without required request or tool checks or guards is
+readable inside the Agent's VM.
 [Where credentials live](docs/sandbox-setup.md#where-credentials-live) lists
 each case.
