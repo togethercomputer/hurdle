@@ -3,12 +3,13 @@ import { backendDependencyInstallCommand } from "./backend-dependencies.mjs";
 import { hurdleEnvironmentValue, RESULT_STORE_DATABASE_URL_ENV } from "./hurdle-environment.mjs";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
-const TOGETHER_EMBEDDINGS_URL = "https://api.together.xyz/v1/embeddings";
 const TOGETHER_CHAT_URL = "https://api.together.xyz/v1/chat/completions";
 
 const ANTHROPIC_MODEL = "claude-sonnet-4-6";
-const TOGETHER_EMBEDDING_MODEL = "intfloat/multilingual-e5-large-instruct";
-const TOGETHER_CHAT_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo";
+// Together's model list still includes retired models, so only a completion
+// proves a model is served. Together offers no serverless embedding models,
+// so preflight checks the key with one native tool call only.
+const TOGETHER_CHAT_MODEL = "Qwen/Qwen3.5-9B";
 const REQUEST_TIMEOUT_MS = 20_000;
 const RESPONSE_LIMIT_BYTES = 64 * 1024;
 
@@ -38,6 +39,9 @@ function knownProviderFailure(provider, response, body) {
     : typeof body?.message === "string" ? body.message : "";
   if (/credit balance|insufficient (?:credit|funds)|billing/iu.test(message)) {
     return result(provider, "fail", "authenticated, but the credit balance is too low");
+  }
+  if (body?.error?.code === "model_not_available") {
+    return result(provider, "fail", "authenticated, but the preflight model is no longer served; Hurdle needs an update");
   }
   if ([401, 403].includes(response?.status)) {
     return result(provider, "fail", `credential rejected (HTTP ${response.status})`);
@@ -82,23 +86,13 @@ export async function checkAnthropicCredential(apiKey, { fetch = globalThis.fetc
 export async function checkTogetherCredential(apiKey, { fetch = globalThis.fetch } = {}) {
   if (!apiKey?.trim()) return result("Together", "skip", "TOGETHER_API_KEY is not set");
   try {
-    const embeddingsResponse = await postJson(fetch, TOGETHER_EMBEDDINGS_URL, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      body: { model: TOGETHER_EMBEDDING_MODEL, input: ["Hurdle preflight"] },
-    });
-    const embeddingsBody = await boundedJson(embeddingsResponse);
-    if (!embeddingsResponse.ok) {
-      return knownProviderFailure("Together", embeddingsResponse, embeddingsBody);
-    }
-    if (!Array.isArray(embeddingsBody?.data?.[0]?.embedding)) {
-      return result("Together", "fail", "embeddings returned an unexpected response");
-    }
-
     const chatResponse = await postJson(fetch, TOGETHER_CHAT_URL, {
       headers: { authorization: `Bearer ${apiKey}` },
       body: {
         model: TOGETHER_CHAT_MODEL,
         max_tokens: 32,
+        // Reasoning would spend the token budget before the tool call.
+        reasoning: { enabled: false },
         messages: [{ role: "user", content: "Use the preflight tool once." }],
         tools: [{
           type: "function",
@@ -116,7 +110,7 @@ export async function checkTogetherCredential(apiKey, { fetch = globalThis.fetch
     if (!Array.isArray(chatBody?.choices?.[0]?.message?.tool_calls)) {
       return result("Together", "fail", "native tool calling returned an unexpected response");
     }
-    return result("Together", "pass", "embeddings and native tool calling succeeded");
+    return result("Together", "pass", `${TOGETHER_CHAT_MODEL} native tool calling succeeded`);
   } catch {
     return result("Together", "fail", "request could not reach the provider");
   }

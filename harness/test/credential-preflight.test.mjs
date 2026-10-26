@@ -51,24 +51,47 @@ test("Anthropic preflight gives a safe low-credit diagnosis", async () => {
   });
 });
 
-test("Together preflight verifies embeddings and native tool calls", async () => {
+test("Together preflight verifies one native tool call on a serverless model", async () => {
   const requests = [];
   const result = await checkTogetherCredential("secret-together", {
     async fetch(url, options) {
       requests.push({ url, options });
-      return requests.length === 1
-        ? response(200, { data: [{ embedding: [0.1, 0.2] }] })
-        : response(200, { choices: [{ message: { tool_calls: [{ id: "call_1" }] } }] });
+      return response(200, { choices: [{ message: { tool_calls: [{ id: "call_1" }] } }] });
     },
   });
 
-  assert.equal(result.status, "pass");
+  assert.deepEqual(result, {
+    provider: "Together",
+    status: "pass",
+    message: "Qwen/Qwen3.5-9B native tool calling succeeded",
+  });
   assert.deepEqual(requests.map(({ url }) => url), [
-    "https://api.together.xyz/v1/embeddings",
     "https://api.together.xyz/v1/chat/completions",
   ]);
-  assert.ok(requests.every(({ options }) => options.headers.authorization === "Bearer secret-together"));
+  const body = JSON.parse(requests[0].options.body);
+  assert.equal(body.model, "Qwen/Qwen3.5-9B");
+  assert.deepEqual(body.reasoning, { enabled: false });
+  assert.equal(body.max_tokens, 32);
+  assert.deepEqual(body.tool_choice, { type: "function", function: { name: "preflight" } });
+  assert.equal(requests[0].options.headers.authorization, "Bearer secret-together");
   assert.doesNotMatch(JSON.stringify(result), /secret-together/);
+});
+
+test("Together preflight names a retired model instead of a bare HTTP 400", async () => {
+  const result = await checkTogetherCredential("secret-together", {
+    fetch: async () => response(400, {
+      error: {
+        message: "Unable to access non-serverless model Qwen/Qwen3.5-9B.",
+        type: "invalid_request_error",
+        code: "model_not_available",
+      },
+    }),
+  });
+  assert.deepEqual(result, {
+    provider: "Together",
+    status: "fail",
+    message: "authenticated, but the preflight model is no longer served; Hurdle needs an update",
+  });
 });
 
 test("E2B preflight lists resources without allocating a sandbox", async () => {
