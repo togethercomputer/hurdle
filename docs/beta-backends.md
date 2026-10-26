@@ -114,7 +114,7 @@ described above. Evaluation runs use the same precedence.
 
 ## 5. Run one cell
 
-Set the Runtime path you created, then run a RAG cell:
+Set the Runtime path you created, then run a tool-calling cell:
 
 ```sh
 RUNTIME=.hurdle/runtime/e2b.json
@@ -122,7 +122,7 @@ RUNTIME=.hurdle/runtime/e2b.json
 npm run hurdle -- run \
   evals/together/hybrid.suite.mjs \
   --runtime "$RUNTIME" \
-  --task rag-search \
+  --task tool-calling-agent-loop \
   --condition baseline \
   --view
 ```

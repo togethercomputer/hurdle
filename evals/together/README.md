@@ -1,10 +1,10 @@
 # Together evaluations
 
-Start with one paid RAG cell:
+Start with one paid tool-calling cell:
 
 ```sh
 npm run preflight
-npm run hybrid -- --task rag-search --condition baseline
+npm run hybrid -- --task tool-calling-agent-loop --condition baseline
 ```
 
 The run uses Claude Code with Sonnet 4.6, scores with deterministic checks and
@@ -15,7 +15,6 @@ an Opus 4.8 Judge, saves results to the filesystem, and opens the Viewer.
 | Task | What it evaluates |
 | --- | --- |
 | `chat-app` | Chat completion, image generation, and transcription |
-| `rag-search` | Embeddings, local retrieval, and grounded answers |
 | `tool-calling-agent-loop` | Native Together tool calls with local mock tools |
 | `gpu-clusters` | GPU discovery and reservation-command generation; it never reserves a cluster |
 
@@ -28,8 +27,8 @@ Together's official `together-ai` skill. See
 | Command | Runs | Passing requires |
 | --- | ---: | --- |
 | `npm run chat-app` | 1 | Judge pass |
-| `npm run hybrid` | 6 | Required code checks and Judge pass |
-| `npm run legacy` | 12 | Judge pass; code checks are advisory |
+| `npm run hybrid` | 3 | Required code checks and Judge pass |
+| `npm run legacy` | 9 | Judge pass; code checks are advisory |
 
 `npm run showcase` is an alias for `npm run legacy`.
 
