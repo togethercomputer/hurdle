@@ -8,19 +8,19 @@ const CAPTURE_ROOT = "/tmp/tae-egress";
 const PROXY_PATH = `${CAPTURE_ROOT}/generic_guardian.py`;
 const LOG_PATH = `${CAPTURE_ROOT}/requests.jsonl`;
 const CA_PATH = `${CAPTURE_ROOT}/guardian-ca.pem`;
-const CA_BUNDLE_PATH = `${CAPTURE_ROOT}/ca-bundle.pem`;
+export const CA_BUNDLE_PATH = `${CAPTURE_ROOT}/ca-bundle.pem`;
 const PYTHON_ROOT = `${CAPTURE_ROOT}/python`;
 const NODE_ROOT = `${CAPTURE_ROOT}/node`;
 const NODE_BOOTSTRAP_PATH = `${NODE_ROOT}/node_proxy_bootstrap.cjs`;
-const BRIDGE_PATH = `${NODE_ROOT}/tcp_ws_bridge.cjs`;
+export const BRIDGE_PATH = `${NODE_ROOT}/tcp_ws_bridge.cjs`;
 const PROXY_PORT = 18080;
 const BRIDGE_PORT = 18081;
-const RELAY_PORT = 18082;
-const CONTROL_HOST = "tae-egress-control.invalid";
-const CONTROL_PREFIX = "/__tae_egress_control__";
-const PROCESS_TIMEOUT_MS = 86_400_000;
-const MAX_CAPTURE_ROWS = 10_000;
-const MAX_CAPTURE_BYTES = 15 * 1024 * 1024;
+export const RELAY_PORT = 18082;
+export const CONTROL_HOST = "tae-egress-control.invalid";
+export const CONTROL_PREFIX = "/__tae_egress_control__";
+export const PROCESS_TIMEOUT_MS = 86_400_000;
+export const MAX_CAPTURE_ROWS = 10_000;
+export const MAX_CAPTURE_BYTES = 15 * 1024 * 1024;
 const MAX_CAPTURE_PATH_BYTES = 4096;
 const UV_VERSION = "0.11.31";
 const UV_LINUX_ARCHIVE = "uv-x86_64-unknown-linux-gnu.tar.gz";
@@ -29,7 +29,7 @@ const UV_ARCHIVE_PATH = `${CAPTURE_ROOT}/${UV_LINUX_ARCHIVE}`;
 const UV_PATH = `${CAPTURE_ROOT}/uv`;
 const MITMPROXY_PYTHON = "3.12.12";
 
-const asset = (...parts) => join(import.meta.dirname, "..", "..", "verify", "proxy", ...parts);
+export const asset = (...parts) => join(import.meta.dirname, "..", "..", "verify", "proxy", ...parts);
 const GENERIC_PROXY = readFileSync(asset("generic_guardian.py"), "utf8");
 const NODE_BOOTSTRAP = readFileSync(asset("node_proxy_bootstrap.cjs"), "utf8");
 const PYTHON_BOOTSTRAP = readFileSync(asset("python_proxy_bootstrap.py"), "utf8");
@@ -255,7 +255,7 @@ export function assertExchangeFactCapturePolicy(policy) {
   return policy;
 }
 
-function capturePolicy(capture) {
+export function capturePolicy(capture) {
   if (capture?.mode === "none") {
     if (capture.exchangeFacts !== null && capture.exchangeFacts !== undefined) {
       throw new TypeError("E2B exchange-fact capture requires egress capture");
@@ -318,7 +318,7 @@ function capturePolicy(capture) {
   };
 }
 
-async function waitForPort(sandbox, port, label, signal = undefined) {
+export async function waitForPort(sandbox, port, label, signal = undefined) {
   const result = await sandbox.commands.run(`python3 - <<'PY'
 import socket, time
 for _ in range(120):
@@ -334,7 +334,7 @@ PY`, { timeoutMs: 45_000, signal });
   if (!result.stdout.includes("READY")) throw new Error(`${label} did not start`);
 }
 
-async function stopProcess(sandbox, handle, label) {
+export async function stopProcess(sandbox, handle, label) {
   if (!handle) return;
   await handle.kill().catch(() => {});
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -345,13 +345,17 @@ async function stopProcess(sandbox, handle, label) {
   throw new Error(`${label} remained active`);
 }
 
-async function installNodeRuntime(sandbox, packageText, lockText, signal) {
+// `bakedRoot` names a directory in the image that already holds this exact
+// runtime's node_modules, installed from the same lockfile at build time.
+async function installNodeRuntime(sandbox, packageText, lockText, signal, bakedRoot = null) {
   await sandbox.commands.run(`mkdir -p ${NODE_ROOT}`, { timeoutMs: 10_000, signal });
   await sandbox.files.write(`${NODE_ROOT}/package.json`, packageText, { signal });
   await sandbox.files.write(`${NODE_ROOT}/package-lock.json`, lockText, { signal });
   await sandbox.files.write(BRIDGE_PATH, BRIDGE, { signal });
   await sandbox.commands.run(
-    `npm --prefix ${NODE_ROOT} ci --ignore-scripts --no-audit --no-fund`,
+    bakedRoot
+      ? `cp -a ${bakedRoot}/node_modules ${NODE_ROOT}/`
+      : `npm --prefix ${NODE_ROOT} ci --ignore-scripts --no-audit --no-fund`,
     { timeoutMs: 120_000, signal },
   );
 }
@@ -421,7 +425,7 @@ async function generateCa(sandbox, signal) {
   return certificate;
 }
 
-async function installWorkloadTrust(workload, certificate, hosts, signal, firewallSuffix = "", firewallVerdict = "REJECT") {
+export async function installWorkloadTrust(workload, certificate, hosts, signal, firewallSuffix = "", firewallVerdict = "REJECT", { systemTrust = false, nodeRuntimeRoot = null, captureRouteFirewall = true } = {}) {
   if (!certificate.includes("BEGIN CERTIFICATE") || certificate.includes("PRIVATE KEY")) {
     throw new Error("Refusing invalid Guardian CA material");
   }
@@ -447,7 +451,15 @@ with open(target, "wb") as output:
         output.write(handle.read())
     output.write(b"\\n")
 PY`, { timeoutMs: 30_000, signal });
-  await installNodeRuntime(workload, AGENT_NODE_PACKAGE, AGENT_NODE_LOCK, signal);
+  if (systemTrust) {
+    // An all-host Guardian intercepts clients that ignore the bundle
+    // variables (git, Rust TLS stacks), so also trust it system-wide.
+    await workload.commands.run(
+      `install -d -m 0755 /usr/local/share/ca-certificates && install -m 0644 ${CA_PATH} /usr/local/share/ca-certificates/hurdle-guardian.crt && update-ca-certificates >/dev/null`,
+      { timeoutMs: 30_000, signal, user: "root" },
+    );
+  }
+  await installNodeRuntime(workload, AGENT_NODE_PACKAGE, AGENT_NODE_LOCK, signal, nodeRuntimeRoot);
   await workload.commands.run(`python3 - <<'PY'
 # seal workload trust permissions: public trust material and bootstraps must be
 # readable, but never writable, by the later isolated Agent identity.
@@ -476,6 +488,10 @@ PY`, {
     signal,
     user: "root",
   });
+  // Capture hosts are reached only through the Guardian, so their direct routes
+  // are refused. Resolving them needs DNS in the workload, which a workload whose
+  // node already refuses all of its egress has neither need nor means for.
+  if (!captureRouteFirewall) return;
   await workload.commands.run(`python3 - <<'PY'
 import ipaddress, json, os, socket, subprocess
 
@@ -526,6 +542,86 @@ PY`, {
     user: "root",
     envs: { TAE_CAPTURE_HOSTS: JSON.stringify(hosts) },
   });
+}
+
+export function workloadProxyEnvironment(hosts) {
+  return {
+    HTTPS_PROXY: `http://127.0.0.1:${RELAY_PORT}`,
+    HTTP_PROXY: `http://127.0.0.1:${RELAY_PORT}`,
+    NO_PROXY: "localhost,127.0.0.1,::1",
+    no_proxy: "localhost,127.0.0.1,::1",
+    SSL_CERT_FILE: CA_BUNDLE_PATH,
+    REQUESTS_CA_BUNDLE: CA_BUNDLE_PATH,
+    CURL_CA_BUNDLE: CA_BUNDLE_PATH,
+    NODE_EXTRA_CA_CERTS: CA_BUNDLE_PATH,
+    NODE_OPTIONS: `--require=${NODE_BOOTSTRAP_PATH}`,
+    PYTHONPATH: PYTHON_ROOT,
+    TAE_EGRESS_CA_BUNDLE: CA_BUNDLE_PATH,
+    TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(hosts),
+    TAE_EGRESS_PROXY: `http://127.0.0.1:${RELAY_PORT}`,
+  };
+}
+
+// Waits for every captured flow to finish after a seal request. `request`
+// sends one control action to the Guardian and returns its parsed state.
+export async function drainSealedGuardian(request, { policyFingerprint }) {
+  let state = await request("seal");
+  const deadline = Date.now() + 120_000;
+  while (true) {
+    if (!Number.isSafeInteger(state.activeFlows) || state.activeFlows < 0) {
+      throw new Error("Guardian returned an invalid active flow count");
+    }
+    if (state.activeFlows === 0) break;
+    if (Date.now() >= deadline) throw new Error("Guardian drain timed out");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    state = await request("status");
+  }
+  if (
+    !state.sealed
+    || state.truncated
+    || !state.journalDigest
+    || state.maxRows !== MAX_CAPTURE_ROWS
+    || state.maxJournalBytes !== MAX_CAPTURE_BYTES
+    || state.maxPathBytes !== MAX_CAPTURE_PATH_BYTES
+    || state.policyFingerprint !== policyFingerprint
+    || !Number.isSafeInteger(state.journalBytes)
+    || state.journalBytes < 0
+    || state.journalBytes > MAX_CAPTURE_BYTES
+  ) {
+    throw new Error("Guardian capture did not seal cleanly");
+  }
+  return state;
+}
+
+export function sealedJournalCollection(state, journal, producer) {
+  const journalBytes = Buffer.from(journal);
+  if (
+    journalBytes.byteLength !== state.journalBytes
+    || sha256(journalBytes) !== state.journalDigest
+  ) {
+    throw new Error("Guardian journal digest mismatch");
+  }
+  const text = journalBytes.toString("utf8");
+  const requests = text.trim()
+    ? text.trim().split("\n").map((line) => JSON.parse(line))
+    : [];
+  if (
+    requests.length !== state.rowCount
+    || requests.some(({ sequence }, index) => sequence !== index)
+  ) {
+    throw new Error("Guardian journal sequence mismatch");
+  }
+  return {
+    status: "captured",
+    requests,
+    provenance: {
+      producer,
+      authority: "environment",
+      lifecyclePhase: "execution",
+      capturedAt: new Date().toISOString(),
+      trust: "environment-observed",
+    },
+  };
 }
 
 async function controlState(sandbox, token, action) {
@@ -680,48 +776,13 @@ export function createExternalGuardianController({
         },
       );
       await waitForPort(workload, RELAY_PORT, "workload relay", signal);
-      session.workloadEnvironment = {
-        HTTPS_PROXY: `http://127.0.0.1:${RELAY_PORT}`,
-        HTTP_PROXY: `http://127.0.0.1:${RELAY_PORT}`,
-        NO_PROXY: "localhost,127.0.0.1,::1",
-        no_proxy: "localhost,127.0.0.1,::1",
-        SSL_CERT_FILE: CA_BUNDLE_PATH,
-        REQUESTS_CA_BUNDLE: CA_BUNDLE_PATH,
-        CURL_CA_BUNDLE: CA_BUNDLE_PATH,
-        NODE_EXTRA_CA_CERTS: CA_BUNDLE_PATH,
-        NODE_OPTIONS: `--require=${NODE_BOOTSTRAP_PATH}`,
-        PYTHONPATH: PYTHON_ROOT,
-        TAE_EGRESS_CA_BUNDLE: CA_BUNDLE_PATH,
-        TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(session.hosts),
-        TAE_EGRESS_PROXY: `http://127.0.0.1:${RELAY_PORT}`,
-      };
+      session.workloadEnvironment = workloadProxyEnvironment(session.hosts);
     },
     async seal({ sandbox, session }) {
-      let state = await controlState(sandbox, session.controlToken, "seal");
-      const deadline = Date.now() + 120_000;
-      while (true) {
-        if (!Number.isSafeInteger(state.activeFlows) || state.activeFlows < 0) {
-          throw new Error("Guardian returned an invalid active flow count");
-        }
-        if (state.activeFlows === 0) break;
-        if (Date.now() >= deadline) throw new Error("Guardian drain timed out");
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        state = await controlState(sandbox, session.controlToken, "status");
-      }
-      if (
-        !state.sealed
-        || state.truncated
-        || !state.journalDigest
-        || state.maxRows !== MAX_CAPTURE_ROWS
-        || state.maxJournalBytes !== MAX_CAPTURE_BYTES
-        || state.maxPathBytes !== MAX_CAPTURE_PATH_BYTES
-        || state.policyFingerprint !== session.policyFingerprint
-        || !Number.isSafeInteger(state.journalBytes)
-        || state.journalBytes < 0
-        || state.journalBytes > MAX_CAPTURE_BYTES
-      ) {
-        throw new Error("Guardian capture did not seal cleanly");
-      }
+      const state = await drainSealedGuardian(
+        (action) => controlState(sandbox, session.controlToken, action),
+        { policyFingerprint: session.policyFingerprint },
+      );
       await stopProcess(sandbox, session.proxyProcess, "Guardian proxy");
       await stopProcess(session.workload, session.relayProcess, "workload relay");
       await stopProcess(sandbox, session.bridgeProcess, "Guardian bridge");
@@ -729,34 +790,7 @@ export function createExternalGuardianController({
       if (journalInfo.size !== state.journalBytes || journalInfo.size > MAX_CAPTURE_BYTES) {
         throw new Error("Guardian journal exceeded its sealed byte bound");
       }
-      const journal = await sandbox.files.read(LOG_PATH);
-      const journalBytes = Buffer.from(journal);
-      if (
-        journalBytes.byteLength !== state.journalBytes
-        || sha256(journalBytes) !== state.journalDigest
-      ) {
-        throw new Error("Guardian journal digest mismatch");
-      }
-      const requests = journal.trim()
-        ? journal.trim().split("\n").map((line) => JSON.parse(line))
-        : [];
-      if (
-        requests.length !== state.rowCount
-        || requests.some(({ sequence }, index) => sequence !== index)
-      ) {
-        throw new Error("Guardian journal sequence mismatch");
-      }
-      return {
-        status: "captured",
-        requests,
-        provenance: {
-          producer,
-          authority: "environment",
-          lifecyclePhase: "execution",
-          capturedAt: new Date().toISOString(),
-          trust: "environment-observed",
-        },
-      };
+      return sealedJournalCollection(state, await sandbox.files.read(LOG_PATH), producer);
     },
   });
 }

@@ -225,6 +225,7 @@ function normalizeEvent(
   exchangeFactPolicy,
   blockedRequests,
   redactText,
+  relevantHosts,
 ) {
   const kind = event?.kind;
   const selectedFields = event?.selectedFields ?? {};
@@ -266,7 +267,10 @@ function normalizeEvent(
   ) {
     throw new TypeError(`Execution Environment returned invalid blocked request ${index}`);
   }
+  // Guardians compute exchange facts only for relevant hosts; an all-host
+  // Guardian may also observe a matching method and path elsewhere.
   const requiresExchangeFacts = kind === "http-request"
+    && (relevantHosts === null || relevantHosts.has(String(event.host).toLowerCase()))
     && exchangeFactPolicy?.profiles.some((profile) => (
       exchangeFactProfileMatchesEvent(profile, event)
     ));
@@ -316,6 +320,7 @@ export function normalizeEgressCollections({
   selectedFieldNames,
   exchangeFactProfiles = [],
   blockedRequests = [],
+  relevantHosts = null,
   redactText,
 }) {
   if (!Array.isArray(collections) || collections.length < 1 || collections.length > 16) {
@@ -327,6 +332,9 @@ export function normalizeEgressCollections({
   const allowedFields = new Set(selectedFieldNames);
   const exchangeFactPolicy = compileExchangeFactProfiles(exchangeFactProfiles);
   const blockedRequestRules = blockedRequestPolicy(blockedRequests);
+  const relevantHostSet = relevantHosts === null
+    ? null
+    : new Set(relevantHosts.map((host) => String(host).toLowerCase()));
   return collections.map((collection) => {
     if (!validProvenance(collection?.provenance)) {
       throw new TypeError("Execution Environment returned invalid egress provenance");
@@ -392,6 +400,7 @@ export function normalizeEgressCollections({
           exchangeFactPolicy,
           blockedRequestRules,
           redactText,
+          relevantHostSet,
         )
       )),
       provenance,

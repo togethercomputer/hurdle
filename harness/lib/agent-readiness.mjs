@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkE2bCredential, checkPostgresCredential, checkTogetherSandboxCredential } from "./credential-preflight.mjs";
+import { findHostGuardianRuntime } from "./host-guardian-runtime.mjs";
 import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
 import { managedImageAgents, managedImageName } from "./managed-images.mjs";
 import { listLocalCodexModels } from "./model-discovery.mjs";
@@ -40,7 +41,8 @@ function checkManagedImage(environment, adapterIds, setup) {
   const together = environment.kind === "together";
   const provider = together ? "together" : "e2b";
   const image = together ? normalizeTogetherSettings(environment.settings).snapshotAlias : environment.settings?.workloadTemplate;
-  const managed = managedImageAgents(image, provider);
+  // Together's own Hurdle image, used without an alias, is Together's to keep current.
+  const managed = image ? managedImageAgents(image, provider) : null;
   if (!managed) return null;
   const label = `${together ? "Together snapshot" : "E2B template"} ${image}`;
   const agents = [...new Set([...managed.agents, ...adapterIds])];
@@ -92,11 +94,13 @@ export async function checkAgentReadiness({
   agentSelections, runtimeProfile, runtimeEnv, requiredCredentials = [],
   judgeCredentialName = null,
   allowResultStoreSetup = false,
+  allowHostGuardianSetup = false,
   suite = "evals/example.suite.mjs", cwd,
 }, {
   fetch = globalThis.fetch, probeCli = probeAgentCli,
   checkE2b = checkE2bCredential, checkPostgres = checkPostgresCredential,
   checkTogetherSandbox = checkTogetherSandboxCredential,
+  findHostGuardian = findHostGuardianRuntime,
   listCodexModels = listLocalCodexModels,
 } = {}) {
   const checks = [];
@@ -170,8 +174,16 @@ export async function checkAgentReadiness({
     checks.push(result(checked.status === "pass" ? "pass" : "fail", "runtime.e2b", `E2B: ${checked.message}.`));
   }
   if (runtimeProfile.environment.kind === "together") {
-    const checked = await checkTogetherSandbox(runtimeEnv[runtimeProfile.environment.apiKeyEnv]);
-    checks.push(result(checked.status === "pass" ? "pass" : "fail", "runtime.together", `Together sandbox: ${checked.message}.`));
+    const checked = await checkTogetherSandbox(runtimeEnv[runtimeProfile.environment.apiKeyEnv], {
+      snapshotAlias: normalizeTogetherSettings(runtimeProfile.environment.settings).snapshotAlias,
+    });
+    checks.push(result(["pass", "skip"].includes(checked.status) ? checked.status : "fail", "runtime.together", `Together sandbox: ${checked.message}.`));
+    // Setup installs the Guardian after readiness passes.
+    if (!allowHostGuardianSetup) {
+      checks.push(findHostGuardian()
+        ? result("pass", "runtime.host-guardian", "Egress Guardian installed on this machine.")
+        : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })} --sandbox together.`));
+    }
   }
   if (runtimeProfile.resultStore.kind === "postgres") {
     const checked = await checkPostgres(runtimeEnv[runtimeProfile.resultStore.databaseUrlEnv]);

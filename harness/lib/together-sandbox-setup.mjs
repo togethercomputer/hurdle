@@ -1,10 +1,13 @@
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { togetherApiUrl } from "./together-api-url.mjs";
+import { mkdtemp, mkdir, copyFile, writeFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseProjectEnvironment } from "./project-environment.mjs";
 import { managedImageAgents, managedImageName, SETUP_AGENT_PACKAGES } from "./managed-images.mjs";
 import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
+import { asset } from "./execution-environments/e2b-guardian.mjs";
+import { ensureHostGuardianRuntime } from "./host-guardian-runtime.mjs";
 import {
   resolveRuntimeProfile,
   describeRuntimeJudgeCapability,
@@ -48,12 +51,66 @@ export function togetherSandboxDockerfile(agents) {
   ].join("\n");
 }
 
+// Bartender's Hurdle API starts the server inside the sandbox itself, and the
+// controller can only write inputs, run task steps and read results over its
+// one socket. So the default snapshot carries the server and the harness code
+// those steps run, laid out as in this repository so their relative imports and
+// assets resolve, plus the Agent's pinned Node runtime (which the server's
+// WebSocket also uses). Kept under /opt: /tmp may be a fresh tmpfs.
+const BARTENDER_ROOT = "/opt/hurdle";
+export const TOGETHER_BARTENDER_SERVER_COMMAND = `node ${BARTENDER_ROOT}/harness/bin/hurdle-sandbox-server.mjs`;
+export const BARTENDER_CONTEXT_FILES = Object.freeze([
+  "bin/hurdle-sandbox-server.mjs",
+  "lib/authority-profile.mjs",
+  "lib/controller-transcript.mjs",
+  "lib/run-model.mjs",
+  "lib/execution-environments/e2b-guardian.mjs",
+  "lib/execution-environments/linux-sandbox-operations.mjs",
+  "lib/execution-environments/local-workload.mjs",
+  "lib/execution-environments/sandbox-server.mjs",
+  "lib/execution-environments/sandbox-socket-protocol.mjs",
+  "lib/execution-environments/sandbox-task.mjs",
+  "lib/execution-environments/together-workload-egress.mjs",
+  "lib/execution-environments/yamux.mjs",
+  "verify/proxy/agent-node-runtime/package-lock.json",
+  "verify/proxy/agent-node-runtime/package.json",
+  "verify/proxy/generic_guardian.py",
+  "verify/proxy/guardian-node-runtime/package-lock.json",
+  "verify/proxy/guardian-node-runtime/package.json",
+  "verify/proxy/guardian-requirements.lock",
+  "verify/proxy/node_proxy_bootstrap.cjs",
+  "verify/proxy/python_proxy_bootstrap.py",
+  "verify/proxy/tcp_ws_bridge.cjs",
+]);
+const HARNESS_ROOT = resolve(import.meta.dirname, "..");
+
+export function togetherBartenderDockerfile(agents) {
+  return [
+    togetherSandboxDockerfile(agents).trimEnd(),
+    `COPY hurdle/ ${BARTENDER_ROOT}/`,
+    `RUN cd ${BARTENDER_ROOT} && npm ci --omit=dev --ignore-scripts --no-audit --no-fund`,
+    "",
+  ].join("\n");
+}
+
+export async function writeTogetherBartenderContext(directory, agents) {
+  const root = join(directory, "hurdle");
+  await mkdir(root, { recursive: true });
+  await writeFile(join(directory, "Dockerfile"), togetherBartenderDockerfile(agents));
+  for (const file of BARTENDER_CONTEXT_FILES) {
+    await mkdir(dirname(join(root, "harness", file)), { recursive: true });
+    await copyFile(join(HARNESS_ROOT, file), join(root, "harness", file));
+  }
+  for (const file of ["package.json", "package-lock.json"])
+    await copyFile(asset("agent-node-runtime", file), join(root, file));
+}
+
 export async function loadTogetherSetupBackend() {
   const { TogetherSandbox } = await import("together-sandbox");
   const client = (apiKey) =>
     new TogetherSandbox({
       apiKey,
-      baseUrl: "https://api.bartender.codesandbox.io",
+      baseUrl: togetherApiUrl(),
       retry: { maxAttempts: 1 },
     });
   return {
@@ -132,9 +189,6 @@ export async function setupTogetherSandbox(
           ].includes(requirement),
         ),
       );
-    dependencies.assertRuntimeDependencies({
-      environment: { kind: "together" },
-    });
     const runtimePath = projectRuntimePath(io.cwd) ?? DEFAULT_PROJECT_RUNTIME;
     const previous = await regularFileContents(resolve(io.cwd, runtimePath));
     if (previous !== null) resolveRuntimeProfile({ cwd: io.cwd, runtimePath });
@@ -150,14 +204,19 @@ export async function setupTogetherSandbox(
         ? config.environment.settings?.snapshotAlias
         : null;
     const managed = saved ? managedImageAgents(saved, "together") : null;
-    // A Hurdle snapshot must hold every Agent CLI the project runs, and keeps
-    // network tools once capture needs them; caller-owned snapshots stay.
+    // Without an alias, runs use Together's own Hurdle image over its socket
+    // and nothing is built. A project that already built a Hurdle snapshot
+    // keeps it: it must hold every Agent CLI the project runs, and keeps
+    // network tools once capture needs them. Caller-owned snapshots stay.
     const agents = [...new Set([...(managed?.agents ?? []), ...ids])].sort();
     const alias =
       snapshot ??
-      (saved && !managed
-        ? saved
-        : managedImageName(agents, "together", { network: needsCapture || managed?.network }));
+      (managed
+        ? managedImageName(agents, "together", { network: needsCapture || managed.network })
+        : saved ?? null);
+    dependencies.assertRuntimeDependencies({
+      environment: { kind: "together", settings: { snapshotAlias: alias } },
+    });
     const settings = normalizeTogetherSettings({
       ...(config.environment?.kind === "together"
         ? config.environment.settings
@@ -171,13 +230,15 @@ export async function setupTogetherSandbox(
         : {}),
       snapshotAlias: alias,
     });
+    // Sizing applies to caller-owned snapshots only; Together sizes its own image.
+    const { snapshotAlias, cpuCount, memoryMiB, ...imageSettings } = settings;
     config.environment = {
       kind: "together",
       apiKeyEnv:
         config.environment?.kind === "together"
           ? config.environment.apiKeyEnv
           : "TOGETHER_API_KEY",
-      settings,
+      settings: alias ? settings : imageSettings,
     };
     if (previous === null) {
       const models = [
@@ -250,6 +311,7 @@ export async function setupTogetherSandbox(
       requiredCredentials: taskCredentials,
       judgeCredentialName: judgeRequired ? profile.judge.credentialEnv : null,
       allowResultStoreSetup: true,
+      allowHostGuardianSetup: true,
       suite,
       cwd: io.cwd,
     });
@@ -260,13 +322,25 @@ export async function setupTogetherSandbox(
         "setup.not-ready",
         "Resolve the setup errors above and rerun setup --sandbox together. No snapshot build or evaluation started.",
       );
-    const backend = await (
-      dependencies.loadTogetherSetupBackend ?? loadTogetherSetupBackend
-    )();
-    const available = await backend.exists(
-      alias,
-      env[profile.environment.apiKeyEnv],
-    );
+    // Every Together workload sends its egress through this machine.
+    io.stdout.write(terminalNote("Installing the egress Guardian on this machine…", io.stdout));
+    try {
+      await (dependencies.ensureHostGuardianRuntime ?? ensureHostGuardianRuntime)();
+    } catch (error) {
+      throw setupError(
+        "setup.host-guardian",
+        error.code === "environment.host-guardian-platform"
+          ? `${error.message} Use --sandbox e2b instead.`
+          : "The egress Guardian could not be installed on this machine. Check network access to github.com and pypi.org, then rerun setup --sandbox together.",
+      );
+    }
+    output.check("pass", "Egress Guardian installed on this machine.");
+    const backend = alias
+      ? await (dependencies.loadTogetherSetupBackend ?? loadTogetherSetupBackend)()
+      : null;
+    const available = alias
+      ? await backend.exists(alias, env[profile.environment.apiKeyEnv])
+      : true;
     if (!available && snapshot)
       throw setupError(
         "setup.snapshot-missing",
@@ -308,7 +382,7 @@ export async function setupTogetherSandbox(
       output.check("pass", "Together snapshot built.");
     } else {
       await saveCredentials(io.cwd, entered);
-      output.check("pass", `Together snapshot available · ${alias}`);
+      output.check("pass", alias ? `Together snapshot available · ${alias}` : "Together's Hurdle image selected; nothing to build.");
     }
     await atomicWrite(
       resolve(io.cwd, runtimePath),
@@ -318,9 +392,9 @@ export async function setupTogetherSandbox(
     const needsStorageSetup = readiness.checks.some(check => check.code === "runtime.postgres-setup-required");
     const nextCommands = [...(needsStorageSetup ? [`${suiteCommand("setup", suite, { cwd: io.cwd })} --store postgres`] : []), suiteCommand("run", suite, { view: true, cwd: io.cwd })];
     output.check("pass", needsStorageSetup ? "Together sandbox configured." : "Setup complete · Together sandbox configured.");
-    if (needsCapture) {
-      io.stdout.write(terminalNote("API capture uses a separate Guardian VM with protected credentials and sealed request evidence.", io.stdout));
-    }
+    io.stdout.write(terminalNote(needsCapture
+      ? "All sandbox traffic routes through this machine, which protects credentials and seals request evidence. Keep it online during runs."
+      : "All sandbox traffic routes through this machine. Keep it online during runs.", io.stdout));
     io.stdout.write(
       "\n" +
         runtimeSummaryRows(profile, io.cwd).map(([label, value]) => fact(label, value)).join("") +

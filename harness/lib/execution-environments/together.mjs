@@ -12,13 +12,16 @@ import {
 } from "../execution-progress.mjs";
 import { deepFreeze, RunSelectionInputError } from "../run-model.mjs";
 import { createTogetherProvider } from "./together-provider.mjs";
+import { createTogetherSocketProvider } from "./together-socket-provider.mjs";
 import { randomBytes } from "node:crypto";
 import { validateSandboxEnvelope } from "./e2b.mjs";
 import { createTogetherGuardianController } from "./together-guardian.mjs";
-import { managedImageName } from "../managed-images.mjs";
 
+// Without a snapshot alias a run uses Together's Hurdle API, which boots
+// Together's own Hurdle image over one socket. An alias names a caller-owned
+// snapshot on the sandbox API instead; cpuCount and memoryMiB apply only there.
 const DEFAULT_SETTINGS = Object.freeze({
-  snapshotAlias: managedImageName(["claude-code"], "together"),
+  snapshotAlias: null,
   cpuCount: 1,
   memoryMiB: 2048,
   maxLifetimeMs: 3_600_000,
@@ -46,13 +49,14 @@ export function normalizeTogetherSettings(
       );
   const selected = { ...defaults, ...structuredClone(settings) };
   if (
-    typeof selected.snapshotAlias !== "string" ||
-    !selected.snapshotAlias.trim() ||
-    selected.snapshotAlias.length > 256 ||
-    /^REPLACE_WITH_/i.test(selected.snapshotAlias)
+    selected.snapshotAlias !== null &&
+    (typeof selected.snapshotAlias !== "string" ||
+      !selected.snapshotAlias.trim() ||
+      selected.snapshotAlias.length > 256 ||
+      /^REPLACE_WITH_/i.test(selected.snapshotAlias))
   )
     throw new RunSelectionInputError(
-      "Together snapshotAlias must name a caller-owned snapshot",
+      "Together snapshotAlias must name a caller-owned snapshot, or be omitted for Together's Hurdle image",
     );
   for (const [key, minimum, maximum] of [
     ["cpuCount", 1, 16],
@@ -87,6 +91,69 @@ function active(signal) {
   if (signal?.aborted)
     throw Object.assign(new Error("cancelled"), { name: "AbortError" });
 }
+// Agent model credentials the controller-host Guardian substitutes, so the
+// workload only ever holds surrogates. Each is sent only to its own hosts.
+const AGENT_CREDENTIAL_ROUTES = Object.freeze({
+  ANTHROPIC_API_KEY: { hosts: ["api.anthropic.com"], headerNames: ["x-api-key", "authorization"] },
+  CLAUDE_CODE_OAUTH_TOKEN: { hosts: ["api.anthropic.com"], headerNames: ["authorization"] },
+  CODEX_API_KEY: { hosts: ["api.openai.com"], headerNames: ["authorization"] },
+  CODEX_ACCESS_TOKEN: { hosts: ["chatgpt.com", "api.openai.com"], headerNames: ["authorization"] },
+});
+
+// Keeps the shape a CLI may inspect before sending: a key's non-secret
+// prefix (sk-ant-oat01-), or a JWT's header and claims with a fresh
+// signature. The signature, not the claims, is what grants access.
+export function agentCredentialSurrogate(value) {
+  const random = randomBytes(32).toString("base64url");
+  const parts = value.split(".");
+  if (parts.length === 3 && parts.every((part) => /^[A-Za-z0-9_-]+$/.test(part))) {
+    return `${parts[0]}.${parts[1]}.${random}`;
+  }
+  // Only published, non-secret key prefixes are kept; anything else could
+  // carry part of the secret.
+  const prefix = /^sk-(?:ant-(?:api|oat|admin)\d{2}-|proj-|svcacct-)?/.exec(value)?.[0] ?? "";
+  return `${prefix}${random}`;
+}
+
+function agentCredentials(env = {}) {
+  return Object.entries(env)
+    .filter(([name, value]) => Object.hasOwn(AGENT_CREDENTIAL_ROUTES, name)
+      && typeof value === "string" && value.trim())
+    .map(([environmentName, value]) => ({
+      environmentName,
+      value,
+      surrogate: agentCredentialSurrogate(value),
+      ...AGENT_CREDENTIAL_ROUTES[environmentName],
+    }));
+}
+
+// A Hurdle sandbox holds no secrets. A credential the task declared for
+// environment delivery, which authoring does for a Suite whose checks are
+// advisory, is delivered through the Guardian instead: swapped into the
+// Authorization header on the task's own API hosts, exactly as a required
+// check would have declared. Without API hosts there is nowhere to swap it,
+// so the run is refused with a reason the operator sees.
+function sealedCredentialBindings(envelope) {
+  const hosts = envelope.capture.mode === "none"
+    ? []
+    : envelope.capture.routes.map(({ host }) => host);
+  const sealed = [];
+  const exposed = [];
+  for (const binding of envelope.credentialBindings) {
+    if (binding.delivery.kind === "captured-http-header" || hosts.length === 0) {
+      sealed.push(binding);
+      if (binding.delivery.kind !== "captured-http-header") exposed.push(binding.environmentName);
+      continue;
+    }
+    sealed.push({ ...binding, delivery: { kind: "captured-http-header", hosts: [...hosts], headerNames: ["authorization"] } });
+  }
+  if (exposed.length) {
+    const message = `Together sandboxes receive credentials only through the Guardian; the Suite declares no API hosts to carry ${exposed.join(", ")}`;
+    throw Object.assign(new TypeError(message), { operatorReason: message });
+  }
+  return Object.freeze(sealed);
+}
+
 function noEgress(reason = "unsupported-platform") {
   return {
     status: "unavailable",
@@ -102,9 +169,16 @@ function noEgress(reason = "unsupported-platform") {
   };
 }
 
+function validProvider(provider) {
+  return ["acquire", "stage", "run", "collectArtifacts", "dispose", "isDisposed"]
+    .every((method) => typeof provider?.[method] === "function");
+}
+
+// `provider` serves every run when given. Otherwise each run's settings choose:
+// a snapshot alias selects the sandbox API, none selects the Hurdle socket.
 export function createTogetherExecutionEnvironment({
   apiKey,
-  provider = createTogetherProvider(),
+  provider: fixedProvider = null,
   guardian = createTogetherGuardianController(),
   defaults = DEFAULT_SETTINGS,
   captureMaxBytes = DEFAULT_CONTROLLER_CAPTURE_MAX_BYTES,
@@ -114,20 +188,20 @@ export function createTogetherExecutionEnvironment({
     throw new TypeError("Together Execution Environment requires an API key");
   if (["prepare", "attach", "seal"].some((method) => typeof guardian?.[method] !== "function"))
     throw new TypeError("Together Execution Environment requires a Guardian controller");
-  for (const method of [
-    "acquire",
-    "stage",
-    "run",
-    "collectArtifacts",
-    "dispose",
-    "isDisposed",
-  ])
-    if (typeof provider?.[method] !== "function")
-      throw new TypeError("Together Execution Environment requires a provider");
+  if (fixedProvider !== null && !validProvider(fixedProvider))
+    throw new TypeError("Together Execution Environment requires a provider");
+  const providers = {};
+  const providerFor = (settings) => {
+    if (fixedProvider) return fixedProvider;
+    const kind = settings.snapshotAlias ? "sandboxApi" : "socket";
+    providers[kind] ??= kind === "socket" ? createTogetherSocketProvider() : createTogetherProvider();
+    return providers[kind];
+  };
   const normalizedDefaults = normalizeTogetherSettings(defaults);
   const progress = normalizeExecutionProgressObserver(progressObserver);
+  // Both built-in providers report workspace metadata.
   const metadataSupported =
-    typeof provider.collectWorkspaceArtifactMetadata === "function";
+    !fixedProvider || typeof fixedProvider.collectWorkspaceArtifactMetadata === "function";
   return Object.freeze({
     id: "together",
     capabilities: Object.freeze([
@@ -158,26 +232,30 @@ export function createTogetherExecutionEnvironment({
         throw new TypeError(
           "Together workspace artifact metadata is unsupported by this provider",
         );
+      const settings = normalizeTogetherSettings(envelope.settings, normalizedDefaults);
+      const provider = providerFor(settings);
+      const credentialBindings = provider.sealedOnly
+        ? sealedCredentialBindings(envelope)
+        : envelope.credentialBindings;
       return withExecutionCredentialValues(
         envelope,
         async (credentialValues) => {
-          const settings = normalizeTogetherSettings(
-            envelope.settings,
-            normalizedDefaults,
-          );
           const stdout = createBoundedControllerCapture(captureMaxBytes);
           const stderr = createBoundedControllerCapture(captureMaxBytes);
           const integrityIssues = [];
           const captureRequired = envelope.capture.mode !== "none";
           const egressCollections = [noEgress(captureRequired ? "capture-failed" : "unsupported-platform")];
           const resources = [];
-          let captureResource;
           let guardianSession;
-          const workloadCredentials = Object.fromEntries(envelope.credentialBindings.map(({ environmentName, delivery }) => [
+          const workloadCredentials = Object.fromEntries(credentialBindings.map(({ environmentName, delivery }) => [
             environmentName, delivery.kind === "captured-http-header"
               ? `tae_surrogate_${randomBytes(32).toString("base64url")}`
               : credentialValues[environmentName],
           ]));
+          const agentSubstitutions = agentCredentials(envelope.launchPlan.env);
+          const agentSurrogates = Object.fromEntries(agentSubstitutions.map(
+            ({ environmentName, surrogate }) => [environmentName, surrogate],
+          ));
           let resource;
           let process = null;
           let phase = "acquire";
@@ -204,37 +282,27 @@ export function createTogetherExecutionEnvironment({
             );
           try {
             active(envelope.signal);
-            const allocatedAt = Date.now();
-            if (captureRequired) {
-              reportStatus("starting-guardian");
-              captureResource = await provider.acquire({
-                ...settings, cpuCount: 1, memoryMiB: 2048, role: "capture", apiKey,
-                signal: envelope.signal,
-              });
-              resources.push(captureResource);
-              reportExecutionProgress(progress, {
-                kind: "environment-resource-allocated", executionId: envelope.executionId,
-                environmentId: "together", resource: {
-                  provider: "together", role: "guardian", id: captureResource.sandboxId,
-                },
-              });
-              active(envelope.signal);
-              phase = "setup";
-              guardianSession = await guardian.prepare({
-                sandbox: captureResource, capture: envelope.capture,
-                credentialBindings: envelope.credentialBindings, credentialValues,
-                surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
-                signal: envelope.signal,
-              });
-              active(envelope.signal);
-              reportStatus("guardian-started");
-              phase = "acquire";
-            }
+            // All workload egress crosses the controller-host Guardian, so it
+            // runs for every task; capture policy applies to capture hosts only.
+            reportStatus("starting-guardian");
+            phase = "setup";
+            guardianSession = await guardian.prepare({
+              capture: envelope.capture,
+              credentialBindings, credentialValues,
+              surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
+              agentCredentials: agentSubstitutions,
+              signal: envelope.signal,
+            });
+            active(envelope.signal);
+            reportStatus("guardian-started");
+            phase = "acquire";
             reportStatus("starting-sandbox");
+            const allocatedAt = Date.now();
             resource = await provider.acquire({
               ...settings,
-              captureBridge: captureRequired,
               apiKey,
+              // Bartender's Hurdle API hands the Guardian CA to the sandbox.
+              caCertificate: guardianSession.caCertificate,
               signal: envelope.signal,
             });
             resources.push(resource);
@@ -256,11 +324,9 @@ export function createTogetherExecutionEnvironment({
               ...settings,
               signal: envelope.signal,
             });
-            if (captureRequired) {
-              await guardian.attach({ workload: resource, sandbox: captureResource,
-                session: guardianSession, signal: envelope.signal });
-              active(envelope.signal);
-            }
+            await guardian.attach({ workload: resource,
+              session: guardianSession, signal: envelope.signal });
+            active(envelope.signal);
             try {
               await executeAgent(envelope, async (program) => {
                 try {
@@ -308,6 +374,7 @@ export function createTogetherExecutionEnvironment({
                           ([name]) => !HOST_LOCATORS.has(name),
                         ),
                       ),
+                      ...agentSurrogates,
                       ...workloadCredentials,
                       ...(guardianSession?.workloadEnvironment ?? {}),
                     },
@@ -326,16 +393,14 @@ export function createTogetherExecutionEnvironment({
                   });
                   active(envelope.signal);
                   reportStatus("collecting-results");
-                  if (captureRequired) {
-                    phase = "seal";
-                    try {
-                      egressCollections[0] = await guardian.seal({
-                        sandbox: captureResource, session: guardianSession,
-                      });
-                    } catch {
+                  phase = "seal";
+                  try {
+                    egressCollections[0] = await guardian.seal({ session: guardianSession });
+                  } catch {
+                    // Without capture hosts the journal is diagnostic only.
+                    if (captureRequired)
                       integrityIssues.push(issue("environment.egress-seal-failed", "seal",
-                        "External Together egress evidence could not be sealed."));
-                    }
+                        "Together egress evidence could not be sealed."));
                   }
                   if (!process.quiescent)
                     integrityIssues.push(

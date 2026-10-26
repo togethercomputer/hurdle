@@ -1,14 +1,23 @@
-"""Bounded, product-neutral network metadata capture for the E2B Guardian."""
+"""Bounded, product-neutral network metadata capture for the egress Guardian.
+
+By default only capture hosts are forwarded. With TAE_EGRESS_INTERCEPT_ALL=1
+(the controller-host Guardian) every host is forwarded: capture hosts keep the
+full policy, while other hosts are streamed and journaled as metadata rows
+within a separate, non-truncating budget.
+"""
 
 from __future__ import annotations
 
 import datetime
+import functools
 import gzip
 import hashlib
 import io
+import ipaddress
 import json
 import os
 import re
+import socket
 import time
 from urllib.parse import urlsplit
 
@@ -19,12 +28,24 @@ LOG_PATH = os.environ["TAE_EGRESS_LOG"]
 CONTROL_TOKEN = os.environ["TAE_EGRESS_CONTROL_TOKEN"]
 CONTROL_HOST = "tae-egress-control.invalid"
 CONTROL_PREFIX = "/__tae_egress_control__"
+# The controller proves the workload -> relay -> Guardian path with a CONNECT
+# to this reserved name when a task has no capture hosts; it never resolves.
+PREFLIGHT_HOST = "preflight.hurdle.invalid"
 MAX_ROWS = min(10_000, max(1, int(os.environ.get("TAE_EGRESS_MAX_ROWS", "10000"))))
 MAX_JOURNAL_BYTES = min(
     15 * 1024 * 1024,
     max(1, int(os.environ.get("TAE_EGRESS_MAX_BYTES", str(15 * 1024 * 1024)))),
 )
 MAX_PATH_BYTES = 4096
+INTERCEPT_ALL = os.environ.get("TAE_EGRESS_INTERCEPT_ALL") == "1"
+MAX_OBSERVED_ROWS = min(
+    MAX_ROWS // 2,
+    max(0, int(os.environ.get("TAE_EGRESS_OBSERVED_MAX_ROWS", str(MAX_ROWS // 2)))),
+)
+MAX_OBSERVED_BYTES = min(
+    MAX_JOURNAL_BYTES // 3,
+    max(0, int(os.environ.get("TAE_EGRESS_OBSERVED_MAX_BYTES", str(MAX_JOURNAL_BYTES // 3)))),
+)
 MAX_SAFE_COUNTER = 9_007_199_254_740_991
 MAX_BODY_BYTES = 1024 * 1024
 MAX_JSON_DEPTH = 32
@@ -302,6 +323,41 @@ def _load_exchange_facts() -> dict[str, object] | None:
 EXCHANGE_FACTS = _load_exchange_facts()
 
 
+# Public by every other measure, yet a cloud metadata service.
+_NON_GLOBAL_EXCEPTIONS = (ipaddress.ip_network("168.63.129.16/32"),)
+
+
+@functools.lru_cache(maxsize=1024)
+def _non_global_destination(host: str) -> bool:
+    """True when the host names a non-public address.
+
+    With every host intercepted, the Guardian dials upstream from the
+    controller machine, so an agent must not reach that machine's loopback,
+    its network or a cloud metadata service through it. A name that does not
+    resolve is left to fail on its own; that keeps reserved control and
+    preflight names working.
+    """
+    host = (host or "").strip().lower().rstrip(".").strip("[]")
+    if not host:
+        return False
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except (OSError, UnicodeError):
+            return False
+        addresses = {
+            ipaddress.ip_address(sockaddr[0])
+            for family, _, _, _, sockaddr in answers
+            if family in (socket.AF_INET, socket.AF_INET6)
+        }
+    return any(
+        not address.is_global or any(address in network for network in _NON_GLOBAL_EXCEPTIONS)
+        for address in addresses
+    )
+
+
 class GenericGuardian:
     def __init__(self) -> None:
         self.active = 0
@@ -311,7 +367,12 @@ class GenericGuardian:
         self.truncated = False
         self.fact_bytes = 0
         self.fact_exchanges = 0
+        self.observed_rows = 0
+        self.observed_bytes = 0
+        self.observed_dropped = 0
         self._started: dict[str, float] = {}
+        self._observed: dict[str, float] = {}
+        self._observed_websockets: dict[str, dict[str, int]] = {}
         self._websockets: dict[str, dict[str, int]] = {}
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         with open(LOG_PATH, "xb"):
@@ -335,6 +396,10 @@ class GenericGuardian:
             "truncated": self.truncated,
             "journalDigest": self._digest(),
             "policyFingerprint": EXCHANGE_FACTS["policyFingerprint"] if EXCHANGE_FACTS else None,
+            **({
+                "observedRowCount": self.observed_rows,
+                "observedDropped": self.observed_dropped,
+            } if INTERCEPT_ALL else {}),
         }
 
     def _control(self, flow: http.HTTPFlow) -> bool:
@@ -356,15 +421,48 @@ class GenericGuardian:
         flow.response = http.Response.make(200, body, {"content-type": "application/json"})
         return True
 
+    def http_connect(self, flow: http.HTTPFlow) -> None:
+        host = (flow.request.pretty_host or "").lower().rstrip(".")
+        # Answer the transport preflight here instead of dialing upstream.
+        if host == PREFLIGHT_HOST:
+            flow.response = http.Response.make(200)
+        # A CONNECT names its destination before any upstream connection or
+        # TLS handshake; refusing here keeps the proxy from dialing at all.
+        elif INTERCEPT_ALL and _non_global_destination(host):
+            flow.response = http.Response.make(403, b"destination is not a public address")
+
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         if self._control(flow):
             return
         host = (flow.request.pretty_host or "").lower().rstrip(".")
+        if INTERCEPT_ALL and _non_global_destination(host):
+            # Absolute-form plaintext requests never pass through http_connect.
+            flow.response = http.Response.make(403, b"destination is not a public address")
+            return
         if host not in CAPTURE_HOSTS:
-            flow.response = http.Response.make(403, b"capture route rejected")
+            if not INTERCEPT_ALL:
+                flow.response = http.Response.make(403, b"capture route rejected")
+                return
+            if self.sealed:
+                flow.response = http.Response.make(503, b"capture sealed")
+                return
+            # Agent credentials are substituted here too, but only over HTTPS
+            # to the default port; otherwise the surrogate goes out unchanged.
+            if (flow.request.scheme or "").lower() == "https" and flow.request.port == 443:
+                self._substitute(flow, host)
+            # Never buffer agent model streams or package downloads.
+            flow.request.stream = True
+            self._observed[flow.id] = time.monotonic()
             return
         if self.sealed:
             flow.response = http.Response.make(503, b"capture sealed")
+            return
+        if INTERCEPT_ALL and (
+            (flow.request.scheme or "").lower() != "https" or flow.request.port != 443
+        ):
+            # Real credentials are substituted for capture hosts; never send
+            # them over plaintext or to an unexpected port.
+            flow.response = http.Response.make(403, b"capture route requires https")
             return
         method = flow.request.method.upper()
         path = urlsplit(flow.request.path).path or "/"
@@ -387,6 +485,12 @@ class GenericGuardian:
                 {"content-type": "text/plain; charset=utf-8"},
             )
             return
+        self._substitute(flow, host)
+        self.active += 1
+        self._started[flow.id] = time.monotonic()
+
+    @staticmethod
+    def _substitute(flow: http.HTTPFlow, host: str) -> None:
         for binding in SUBSTITUTIONS:
             if host not in binding.get("hosts", []):
                 continue
@@ -398,8 +502,6 @@ class GenericGuardian:
                 current = flow.request.headers.get(header_name)
                 if current is not None and surrogate in current:
                     flow.request.headers[header_name] = current.replace(surrogate, value)
-        self.active += 1
-        self._started[flow.id] = time.monotonic()
 
     def _append(self, observed: dict[str, object]) -> None:
         if self.sequence >= MAX_ROWS:
@@ -416,6 +518,89 @@ class GenericGuardian:
             os.fsync(handle.fileno())
         self.sequence += 1
         self.journal_bytes += len(line)
+
+    def _append_observed(self, observed: dict[str, object]) -> None:
+        # Observed rows are diagnostic: exhausting their budget drops rows
+        # without truncating the capture journal or failing the seal.
+        if self.sealed:
+            self.observed_dropped += 1
+            return
+        line_bytes = len(
+            json.dumps({**observed, "sequence": self.sequence}, separators=(",", ":"), ensure_ascii=True)
+        ) + 1
+        if (
+            self.observed_rows >= MAX_OBSERVED_ROWS
+            or self.observed_bytes + line_bytes > MAX_OBSERVED_BYTES
+            or self.sequence >= MAX_ROWS
+            or self.journal_bytes + line_bytes > MAX_JOURNAL_BYTES
+        ):
+            self.observed_dropped += 1
+            return
+        self._append(observed)
+        self.observed_rows += 1
+        self.observed_bytes += line_bytes
+
+    def _finish_observed_http(self, flow: http.HTTPFlow, status_code: int | None) -> None:
+        started = self._observed.pop(flow.id, None)
+        if started is None:
+            return
+        request = flow.request
+        method = request.method.upper()
+        scheme = request.scheme.lower() if request.scheme else None
+        path = urlsplit(request.path).path or "/"
+        host = (request.pretty_host or "").lower().rstrip(".")
+        if (
+            not method
+            or len(method) > 16
+            or not method.isascii()
+            or not method.isalpha()
+            or (scheme is not None and scheme not in ("http", "https"))
+            or not path.startswith("/")
+            or len(path.encode("utf-8")) > MAX_PATH_BYTES
+            or not host
+            or len(host.encode("utf-8")) > 253
+        ):
+            self.observed_dropped += 1
+            return
+        self._append_observed({
+            "kind": "http-request",
+            "observedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "method": method,
+            "scheme": scheme,
+            "host": host,
+            "path": path,
+            "statusCode": status_code,
+            "durationMs": max(0, int((time.monotonic() - started) * 1000)),
+            "selectedFields": {},
+        })
+
+    def _finish_observed_websocket(self, flow: http.HTTPFlow) -> None:
+        started = self._observed.pop(flow.id, None)
+        counters = self._observed_websockets.pop(flow.id, None)
+        if started is None or counters is None:
+            return
+        request = flow.request
+        path = urlsplit(request.path).path or "/"
+        scheme = {"http": "ws", "https": "wss"}.get(request.scheme.lower() if request.scheme else None)
+        host = (request.pretty_host or "").lower().rstrip(".")
+        if scheme is None or not path.startswith("/") or len(path.encode("utf-8")) > MAX_PATH_BYTES or not host:
+            self.observed_dropped += 1
+            return
+        self._append_observed({
+            "kind": "websocket-session",
+            "observedAt": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "scheme": scheme,
+            "host": host,
+            "path": path,
+            "statusCode": 101,
+            "durationMs": max(0, int((time.monotonic() - started) * 1000)),
+            **counters,
+            "selectedFields": {},
+        })
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._observed and flow.response is not None:
+            flow.response.stream = True
 
     def _selected_fields(self, flow: http.HTTPFlow) -> dict[str, str]:
         host = (flow.request.pretty_host or "").lower().rstrip(".")
@@ -688,6 +873,17 @@ class GenericGuardian:
         if flow.request.pretty_host == CONTROL_HOST:
             return
         status_code = flow.response.status_code if flow.response else None
+        if flow.id in self._observed:
+            if status_code == 101:
+                self._observed_websockets.setdefault(flow.id, {
+                    "framesSent": 0,
+                    "bytesSent": 0,
+                    "framesReceived": 0,
+                    "bytesReceived": 0,
+                })
+            else:
+                self._finish_observed_http(flow, status_code)
+            return
         if status_code == 101:
             self._websockets.setdefault(flow.id, {
                 "framesSent": 0,
@@ -699,6 +895,14 @@ class GenericGuardian:
         self._finish_http(flow, status_code)
 
     def websocket_start(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._observed:
+            self._observed_websockets.setdefault(flow.id, {
+                "framesSent": 0,
+                "bytesSent": 0,
+                "framesReceived": 0,
+                "bytesReceived": 0,
+            })
+            return
         self._websockets.setdefault(flow.id, {
             "framesSent": 0,
             "bytesSent": 0,
@@ -707,10 +911,14 @@ class GenericGuardian:
         })
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
-        counters = self._websockets.get(flow.id)
+        observed = flow.id in self._observed
+        counters = (self._observed_websockets if observed else self._websockets).get(flow.id)
         messages = getattr(getattr(flow, "websocket", None), "messages", ())
         if counters is None or not messages:
-            self.truncated = True
+            if observed:
+                self.observed_dropped += 1
+            else:
+                self.truncated = True
             return
         message = messages[-1]
         content = message.content
@@ -722,15 +930,25 @@ class GenericGuardian:
         else:
             frame_key, byte_key = "framesReceived", "bytesReceived"
         if counters[frame_key] >= MAX_SAFE_COUNTER or counters[byte_key] > MAX_SAFE_COUNTER - size:
-            self.truncated = True
+            if not observed:
+                self.truncated = True
             return
         counters[frame_key] += 1
         counters[byte_key] += size
 
     def websocket_end(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._observed:
+            self._finish_observed_websocket(flow)
+            return
         self._finish_websocket(flow)
 
     def error(self, flow: http.HTTPFlow) -> None:
+        if flow.id in self._observed:
+            if flow.id in self._observed_websockets:
+                self._finish_observed_websocket(flow)
+            else:
+                self._finish_observed_http(flow, None)
+            return
         if flow.id in self._websockets:
             self._drop_websocket(flow)
         else:

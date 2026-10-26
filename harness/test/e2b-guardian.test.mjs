@@ -999,3 +999,147 @@ test("generic E2B Guardian rejects attach without restricted public traffic", as
     /restricted public traffic and a traffic access token/,
   );
 });
+
+test("intercept-all Guardian forwards every host, streams and journals non-capture hosts within a non-truncating budget", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "tae-intercept-all-guardian-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const journal = join(root, "requests.jsonl");
+  const script = String.raw`
+import json, os, runpy, sys, types
+
+class Response:
+    @staticmethod
+    def make(status, content=b"", headers=None):
+        return types.SimpleNamespace(status_code=status, content=content, headers=headers or {})
+
+mitmproxy = types.ModuleType("mitmproxy")
+mitmproxy.http = types.SimpleNamespace(HTTPFlow=object, Response=Response)
+sys.modules["mitmproxy"] = mitmproxy
+addon = runpy.run_path(os.environ["GUARDIAN_PATH"])["addons"][0]
+
+def flow(flow_id, host, path, scheme="https", port=443, headers=None):
+    request = types.SimpleNamespace(pretty_host=host, path=path, method="get", scheme=scheme,
+        port=port, headers=headers or {}, stream=False)
+    return types.SimpleNamespace(id=flow_id, request=request, response=None)
+
+def control(action):
+    value = flow("control-" + action, "tae-egress-control.invalid", "/__tae_egress_control__/" + action,
+        headers={"x-tae-egress-control": "control-token"})
+    addon.requestheaders(value)
+    return json.loads(value.response.content)
+
+captured = flow("captured", "api.example.com", "/v1/models", headers={"authorization": "Bearer surrogate"})
+addon.requestheaders(captured)
+assert captured.request.headers["authorization"] == "Bearer real-secret"
+assert captured.request.stream is False, "capture hosts keep buffered bodies for exchange facts"
+captured.response = Response.make(200)
+addon.response(captured)
+
+plaintext = flow("plaintext", "api.example.com", "/v1/models", scheme="http", port=80,
+    headers={"authorization": "Bearer surrogate"})
+addon.requestheaders(plaintext)
+assert plaintext.response.status_code == 403
+assert plaintext.request.headers["authorization"] == "Bearer surrogate", "never substitute over plaintext"
+
+model = flow("model", "api.anthropic.com", "/v1/messages?beta=true", headers={"authorization": "Bearer surrogate", "x-api-key": "agent-surrogate"})
+addon.requestheaders(model)
+assert model.response is None, "non-capture hosts are forwarded"
+assert model.request.stream is True
+assert model.request.headers["authorization"] == "Bearer surrogate", "substitutions stay scoped to their hosts"
+assert model.request.headers["x-api-key"] == "real-agent-key", "agent credentials are substituted on their own host"
+plain_model = flow("plain-model", "api.anthropic.com", "/v1/messages", scheme="http", port=80, headers={"x-api-key": "agent-surrogate"})
+addon.requestheaders(plain_model)
+assert plain_model.request.headers["x-api-key"] == "agent-surrogate", "never substitute over plaintext"
+assert plain_model.response is None
+model.response = types.SimpleNamespace(status_code=200, headers={}, stream=False)
+addon.responseheaders(model)
+assert model.response.stream is True
+addon.response(model)
+
+socket = flow("socket", "realtime.example.net", "/ws")
+addon.requestheaders(socket)
+socket.response = types.SimpleNamespace(status_code=101, headers={})
+addon.response(socket)
+socket.websocket = types.SimpleNamespace(messages=[types.SimpleNamespace(content=b"ping", from_client=True)])
+addon.websocket_message(socket)
+addon.websocket_end(socket)
+
+overflow = flow("overflow", "registry.npmjs.org", "/left-pad")
+addon.requestheaders(overflow)
+overflow.response = types.SimpleNamespace(status_code=200, headers={}, stream=False)
+addon.response(overflow)
+
+pending = flow("pending", "registry.npmjs.org", "/pending")
+addon.requestheaders(pending)
+state = control("seal")
+assert state["activeFlows"] == 0, "observed flows never block the capture drain"
+assert state["journalDigest"].startswith("sha256:")
+assert state["truncated"] is False
+assert (state["rowCount"], state["observedRowCount"], state["observedDropped"]) == (3, 2, 1)
+pending.response = types.SimpleNamespace(status_code=200, headers={}, stream=False)
+addon.response(pending)
+late = flow("late", "registry.npmjs.org", "/late")
+addon.requestheaders(late)
+assert late.response.status_code == 503
+state = control("status")
+assert (state["rowCount"], state["observedDropped"], state["truncated"]) == (3, 2, False)
+`;
+  const result = spawnSync("python3", ["-c", script], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GUARDIAN_PATH: guardianPath.pathname,
+      TAE_EGRESS_LOG: journal,
+      TAE_EGRESS_CONTROL_TOKEN: "control-token",
+      TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(["api.example.com"]),
+      TAE_EGRESS_INTERCEPT_ALL: "1",
+      TAE_EGRESS_OBSERVED_MAX_ROWS: "2",
+      TAE_EGRESS_SUBSTITUTIONS: JSON.stringify([{
+        surrogate: "surrogate", value: "real-secret", hosts: ["api.example.com"], headerNames: ["authorization"],
+      }, {
+        surrogate: "agent-surrogate", value: "real-agent-key", hosts: ["api.anthropic.com"], headerNames: ["x-api-key"],
+      }]),
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const contents = readFileSync(journal, "utf8");
+  assert.doesNotMatch(contents, /real-secret|real-agent-key|surrogate|beta=true/);
+  const rows = contents.trim().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(rows.map(({ sequence, host, path, kind }) => [sequence, kind, host, path]), [
+    [0, "http-request", "api.example.com", "/v1/models"],
+    [1, "http-request", "api.anthropic.com", "/v1/messages"],
+    [2, "websocket-session", "realtime.example.net", "/ws"],
+  ]);
+  assert.deepEqual(rows[1].selectedFields, {});
+  assert.equal(rows[2].bytesSent, 4);
+});
+
+test("generic Guardian keeps rejecting non-capture hosts unless intercept-all is enabled", () => {
+  const script = String.raw`
+import os, runpy, sys, types
+class Response:
+    @staticmethod
+    def make(status, content=b"", headers=None):
+        return types.SimpleNamespace(status_code=status, content=content, headers=headers or {})
+mitmproxy = types.ModuleType("mitmproxy")
+mitmproxy.http = types.SimpleNamespace(HTTPFlow=object, Response=Response)
+sys.modules["mitmproxy"] = mitmproxy
+addon = runpy.run_path(os.environ["GUARDIAN_PATH"])["addons"][0]
+request = types.SimpleNamespace(pretty_host="api.anthropic.com", path="/v1/messages", method="POST", scheme="http", port=80, headers={})
+value = types.SimpleNamespace(id="other", request=request, response=None)
+addon.requestheaders(value)
+assert value.response.status_code == 403
+assert "observedRowCount" not in addon._state()
+`;
+  const root = mkdtempSync(join(tmpdir(), "tae-selective-guardian-"));
+  try {
+    const result = spawnSync("python3", ["-c", script], {
+      encoding: "utf8",
+      env: { ...process.env, GUARDIAN_PATH: guardianPath.pathname, TAE_EGRESS_LOG: join(root, "requests.jsonl"),
+        TAE_EGRESS_CONTROL_TOKEN: "control-token", TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(["api.example.com"]) },
+    });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
