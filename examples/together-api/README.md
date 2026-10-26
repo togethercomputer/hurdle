@@ -51,8 +51,10 @@ check rejects extra completion attempts after execution.
 The fixture uses the serverless `Qwen/Qwen3.5-9B` model with reasoning turned
 off, so the 32-token reply contains text rather than only reasoning tokens. Edit
 `fixtures/request.json` to try another model. Choose one from Together's
-[serverless catalog](https://docs.together.ai/docs/serverless/models); models
-that need a dedicated endpoint fail with HTTP 400.
+[serverless catalog](https://docs.together.ai/docs/serverless/models). The model
+list still includes retired models, so the completion is the real availability
+check: a retired model returns HTTP 400 `model_not_available`, and the prompt
+tells the Agent to stop and say the fixture needs a serverless model.
 
 The checks require trusted, successful GET /v1/models and POST
 /v1/chat/completions evidence. Native Local cannot supply that evidence. Artifact
