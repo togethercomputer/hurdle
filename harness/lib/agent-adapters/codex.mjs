@@ -33,10 +33,17 @@ function selectedCodexEnvironment(runtimeEnv) {
   return selected;
 }
 
-// Codex sends an API key as a bearer token only to the OpenAI API. A ChatGPT
-// access token is read and refreshed by Codex itself, so a stand-in cannot
-// replace it; it keeps environment delivery.
+// Codex sends an API key as a bearer token to the OpenAI API, and a ChatGPT
+// access token to ChatGPT's backend or the OpenAI API. An access token is a
+// JWT: its stand-in keeps the claims Codex reads and replaces the signature.
 function codexCredentialRoutes(environment) {
+  if (isNonblankString(environment.CODEX_ACCESS_TOKEN)) {
+    return [{
+      environmentName: "CODEX_ACCESS_TOKEN",
+      hosts: ["chatgpt.com", "api.openai.com"],
+      headerNames: ["authorization"],
+    }];
+  }
   return isNonblankString(environment.CODEX_API_KEY)
     ? [{
         environmentName: "CODEX_API_KEY",

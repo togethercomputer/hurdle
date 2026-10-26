@@ -13,7 +13,7 @@ const HOST_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 // Only these public, documented key prefixes are copied into a stand-in, so a
 // CLI that checks a key's shape still accepts it. No secret bytes are copied.
 const PUBLIC_KEY_PREFIXES = Object.freeze([
-  /^sk-ant-[a-z]{3}\d{2}-/,
+  /^sk-ant-(?:api|oat|admin)\d{2}-/,
   /^sk-(?:proj|svcacct|admin)-/,
   /^sk-/,
 ]);
@@ -66,7 +66,15 @@ export function assertCredentialRoutes(routes, env = {}) {
   return routes ?? [];
 }
 
+const JWT_SEGMENT = /^[A-Za-z0-9_-]+$/;
+
 export function agentCredentialStandIn(value, entropy) {
+  // A JWT keeps its header and claims, which a CLI may decode before sending,
+  // with a fresh signature: the signature, not the claims, grants access.
+  const parts = value.split(".");
+  if (parts.length === 3 && parts.every((part) => JWT_SEGMENT.test(part))) {
+    return `${parts[0]}.${parts[1]}.hurdle_agent_stand_in_${entropy()}`;
+  }
   const prefix = PUBLIC_KEY_PREFIXES
     .map((pattern) => pattern.exec(value)?.[0])
     .find(Boolean) ?? "";

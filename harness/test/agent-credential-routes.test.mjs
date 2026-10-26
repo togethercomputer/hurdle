@@ -45,7 +45,7 @@ test("Claude Code routes its selected credential only to the Anthropic API", () 
   assert.deepEqual(both.credentialRoutes, [anthropicRoute("ANTHROPIC_API_KEY")]);
 });
 
-test("Codex routes an API key to the OpenAI API and leaves an access token unrouted", () => {
+test("Codex routes an API key to the OpenAI API and an access token to ChatGPT and OpenAI", () => {
   const route = {
     environmentName: "CODEX_API_KEY",
     hosts: ["api.openai.com"],
@@ -55,7 +55,11 @@ test("Codex routes an API key to the OpenAI API and leaves an access token unrou
   assert.deepEqual(codexPlan({ CODEX_API_KEY: "sk-proj-key" }).credentialRoutes, [route]);
   const accessToken = codexPlan({ CODEX_ACCESS_TOKEN: "chatgpt-access-token" });
   assert.equal(accessToken.env.CODEX_ACCESS_TOKEN, "chatgpt-access-token");
-  assert.deepEqual(accessToken.credentialRoutes, []);
+  assert.deepEqual(accessToken.credentialRoutes, [{
+    environmentName: "CODEX_ACCESS_TOKEN",
+    hosts: ["chatgpt.com", "api.openai.com"],
+    headerNames: ["authorization"],
+  }]);
 });
 
 test("credential routes are closed, scoped to present credentials, and bounded", () => {
@@ -101,6 +105,11 @@ test("a stand-in copies only a public key prefix, never secret bytes", () => {
   );
   assert.equal(agentCredentialStandIn("sk-SECRET-x", entropy), "sk-hurdle_agent_stand_in_entropy");
   assert.equal(agentCredentialStandIn("SECRET-x-y", entropy), "hurdle_agent_stand_in_entropy");
+  // A JWT keeps its header and claims but never its signature.
+  assert.equal(
+    agentCredentialStandIn("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.SIGNATURE-SECRET", entropy),
+    "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.hurdle_agent_stand_in_entropy",
+  );
 });
 
 test("routed Agent credentials reach the workload only as stand-ins on every turn", () => {

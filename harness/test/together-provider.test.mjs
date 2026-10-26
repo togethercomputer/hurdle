@@ -192,13 +192,9 @@ test("Together restricts inbound traffic, sets TTL and capacity, and disables mu
     memory_bytes: 4096 * 1024 * 1024,
     ttl: 181,
     tags: { "hurdle-role": "execution" },
-    experimental: { network_policy: { inbound_allowlist: [] } },
+    // Only the bridge port is reachable, and only with the sandbox token.
+    experimental: { network_policy: { inbound_allowlist: [{ ports: ["18083"], requires_token: true }] } },
   });
-  const input = { apiKey: 'test-provider', snapshotAlias: 'test@v1', cpuCount: 1, memoryMiB: 2048, maxLifetimeMs: 600000 };
-  await provider.acquire({ ...input, role: 'capture' });
-  assert.deepEqual(allocation.experimental.network_policy.inbound_allowlist, [{ ports: ['18081'], requires_token: false }]);
-  await provider.acquire({ ...input, captureBridge: true });
-  assert.deepEqual(allocation.experimental.network_policy.inbound_allowlist, [{ ports: ['18083'], requires_token: false }]);
 });
 test("Together retains and terminates allocations when SDK readiness or setup fails", async t => {
   const sdk = await import("together-sandbox");
@@ -319,6 +315,7 @@ test("Together transfers binary artifacts without UTF-8 corruption", async () =>
 test("Together preflight is read-only and omits provider diagnostics", async () => {
   let listed = false;
   const result = await checkTogetherSandboxCredential("key", {
+    snapshotAlias: "caller@v1",
     loadSdk: async () => ({
       TogetherSandbox: class {
         constructor() {
@@ -334,10 +331,16 @@ test("Together preflight is read-only and omits provider diagnostics", async () 
   assert.equal(listed, true);
   assert.equal(result.status, "pass");
   const rejected = await checkTogetherSandboxCredential("key", {
+    snapshotAlias: "caller@v1",
     loadSdk: async () => {
       throw Object.assign(new Error("private provider body"), { status: 403 });
     },
   });
   assert.equal(rejected.status, "fail");
   assert.doesNotMatch(JSON.stringify(rejected), /private provider body/);
+});
+test("Together preflight leaves the key to the Hurdle API when no snapshot is selected", async () => {
+  const loadSdk = async () => { throw new Error("the sandbox API is not used"); };
+  assert.equal((await checkTogetherSandboxCredential("key", { loadSdk })).status, "skip");
+  assert.equal((await checkTogetherSandboxCredential("", { loadSdk })).status, "fail");
 });
