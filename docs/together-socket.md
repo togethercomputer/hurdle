@@ -25,9 +25,10 @@ Three facts give that, and they are enforced by different parties:
   the connection.
 
 The sandbox holds no secrets. The Guardian on your machine keeps every real
-credential and swaps surrogates for them on egress. A task credential declared
-with environment delivery is refused before the run starts; declare
-`captured-http-header` delivery instead.
+credential, and the Agent receives only stand-ins. The Guardian swaps the Suite's
+`api.authorizationCredential` into the `Authorization` header of HTTPS requests
+to the Suite's `api.hosts`, whatever the Task's checks. A credential with no API
+hosts to carry it is refused before any sandbox is allocated.
 
 ## The upgrade
 

@@ -359,3 +359,8 @@ the Suite's credential stays in the Guardian only for a Task with required
 request or tool checks or guards. See
 [where credentials live](./sandbox-setup.md#where-credentials-live) for every
 credential and environment.
+
+In a sandbox, the Guardian swaps the Suite's credential only in the request's
+`Authorization` header, sent as `Bearer <key>` or as the bare key. A target API
+that reads its key from another header, a query parameter or the request body
+receives only the stand-in and rejects the request.

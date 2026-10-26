@@ -170,7 +170,15 @@ and by anything a prompt persuades the Agent to run.
 On E2B and on Together without a `snapshotAlias`, every Task credential is
 delivered through the Guardian whatever the Task's checks, so advisory checks keep
 the key out of the Agent's VM too. A Task credential with no API hosts to carry it
-is refused before the run starts. Together without a `snapshotAlias` runs on
+is refused before any sandbox is allocated.
+
+The Guardian swaps a Task credential only in the request's `Authorization`
+header, sent as `Bearer <key>` or as the bare key. A target API that reads its
+key from another header, such as `X-API-Key`, or from a query parameter or the
+request body receives only the stand-in and rejects the request wherever the
+table says Guardian only.
+
+Together without a `snapshotAlias` runs on
 Together's Hurdle socket, where the sandbox also has no network of its own; see
 [the Together Hurdle socket](./together-socket.md).
 
