@@ -1,7 +1,7 @@
-// Splits a run's recorded requests into the Task's API calls and the Agent's
-// own traffic. On Together the Guardian sees every connection the sandbox
-// makes, so its journal also holds the Agent's model, config and telemetry
-// calls. Journal rows carry no route, so the Suite's API hosts decide.
+// The Viewer lists only the Task's API calls. On Together the Guardian sees
+// every connection the sandbox makes, so its journal also holds the Agent's
+// own model, config and telemetry calls. Journal rows carry no route, so the
+// Suite's API hosts decide.
 
 /** The run's Suite API hosts, or null when the record does not say. */
 export function taskApiHosts(snapshot) {
@@ -10,18 +10,11 @@ export function taskApiHosts(snapshot) {
   return new Set(hosts.filter((host) => typeof host === "string").map((host) => host.toLowerCase()));
 }
 
-/** "task" for a call to a Suite API host; "agent" for anything else. */
-export function apiCallScope(host, taskHosts) {
-  // Without recorded hosts, keep showing every row as a task call.
-  if (taskHosts === null) return "task";
-  return taskHosts.has(String(host).toLowerCase()) ? "task" : "agent";
-}
-
-export function splitApiCalls(rows) {
-  return {
-    task: rows.filter((row) => row.scope !== "agent"),
-    agent: rows.filter((row) => row.scope === "agent"),
-  };
+/** True for a call to one of the Suite's API hosts. */
+export function isTaskApiCall(host, taskHosts) {
+  // Without recorded hosts, keep every call.
+  if (taskHosts === null) return true;
+  return taskHosts.has(String(host).toLowerCase());
 }
 
 // 101 (WebSocket upgrade) is a success.

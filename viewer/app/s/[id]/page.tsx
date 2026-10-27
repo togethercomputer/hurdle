@@ -287,7 +287,6 @@ export default async function SessionPage({
     ? (rawTogetherRequests.filter((row) => row && typeof row === "object") as Array<Record<string, unknown>>)
     : [];
   const togetherRequestsTruncated = dbSessionRecord.togetherRequestsTruncated === true;
-  const togetherAgentTrafficTruncated = dbSessionRecord.togetherAgentTrafficTruncated === true;
   // Shared frame: breadcrumbs, version chip, pager and page header.
   const [versions, allSessions] = await Promise.all([
     getVersions().catch(() => []),
@@ -376,7 +375,6 @@ export default async function SessionPage({
                 <TogetherRequestsCard
                   requests={togetherRequests as Parameters<typeof TogetherRequestsCard>[0]["requests"]}
                   truncated={togetherRequestsTruncated}
-                  agentTruncated={togetherAgentTrafficTruncated}
                 />
               )}
               <p className="text-xs text-fg-faint pt-2">Session JSONL not available — conversation view requires the full session log.</p>
@@ -726,7 +724,6 @@ export default async function SessionPage({
                   <TogetherRequestsCard
                     requests={togetherRequests as Parameters<typeof TogetherRequestsCard>[0]["requests"]}
                     truncated={togetherRequestsTruncated}
-                    agentTruncated={togetherAgentTrafficTruncated}
                   />
                 )}
 

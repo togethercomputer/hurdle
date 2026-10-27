@@ -58,8 +58,9 @@ The packed-install test verifies that the package includes this exact README.
 npm refreshes the package-page README only when a new version is published, so
 README fixes also require a patch release. See
 [npm's README guidance](https://docs.npmjs.com/about-package-readme-files/).
-After the bill-free checks and build pass, bump the root package version and
-publish the verified archive from the repository root:
+After the bill-free checks and build pass, add the release's notes to
+`CHANGELOG.md`, bump the root package version and publish the verified archive
+from the repository root:
 
 ```sh
 npm version patch --no-git-tag-version

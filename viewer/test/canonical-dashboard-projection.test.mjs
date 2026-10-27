@@ -411,7 +411,6 @@ test("canonical dashboard projects captured API calls from bounded egress eviden
     prompt_tokens: null,
     completion_tokens: null,
     duration_ms: 42,
-    scope: "task",
   }, {
     ts: observedAt,
     method: "POST",
@@ -424,7 +423,6 @@ test("canonical dashboard projects captured API calls from bounded egress eviden
     completion_tokens: null,
     duration_ms: 0,
     disposition: "blocked",
-    scope: "task",
   }, {
     ts: observedAt,
     method: "WS",
@@ -440,7 +438,6 @@ test("canonical dashboard projects captured API calls from bounded egress eviden
     frames_recv: 4,
     bytes_sent: 128,
     bytes_recv: 256,
-    scope: "task",
   }]);
   assert.equal(detail.togetherRequestsTruncated, false);
   assert.deepEqual(egressReadOptions, { maxBytes: 16 * 1024 * 1024 });
@@ -473,10 +470,9 @@ test("canonical dashboard bounds rendered API calls and marks truncation", async
   assert.equal(detail.togetherRequests.length, 250);
   assert.equal(detail.togetherRequests.at(-1).path, "/v1/items/249");
   assert.equal(detail.togetherRequestsTruncated, true);
-  assert.equal(detail.togetherAgentTrafficTruncated, false);
 });
 
-test("canonical dashboard separates the Agent's own traffic from Task API calls", async () => {
+test("canonical dashboard lists only Task API calls, without the Agent's own traffic", async () => {
   const request = (sequence, host, path, statusCode) => ({
     kind: "http-request",
     sequence,
@@ -508,13 +504,11 @@ test("canonical dashboard separates the Agent's own traffic from Task API calls"
     request(3, "http-intake.logs.us5.datadoghq.com", "/api/v2/logs"),
     request(4, "api.together.ai", "/v1/chat/completions", 200),
   ]);
-  assert.deepEqual(detail.togetherRequests.map(row => [row.host, row.scope]), [
-    ["api.anthropic.com", "agent"],
-    ["api.together.ai", "task"],
-    ["api.anthropic.com", "agent"],
-    ["http-intake.logs.us5.datadoghq.com", "agent"],
-    ["api.together.ai", "task"],
+  assert.deepEqual(detail.togetherRequests.map(row => [row.host, row.path]), [
+    ["api.together.ai", "/v1/models"],
+    ["api.together.ai", "/v1/chat/completions"],
   ]);
+  assert.equal(detail.togetherRequestsTruncated, false);
 
   // Heavy Agent traffic cannot push the Task's calls past the row limit.
   const busy = structuredClone(completeRecord);
@@ -523,16 +517,14 @@ test("canonical dashboard separates the Agent's own traffic from Task API calls"
     ...Array.from({ length: 300 }, (_, sequence) => request(sequence, "api.anthropic.com", `/v1/messages/${sequence}`, 200)),
     request(300, "api.together.ai", "/v1/chat/completions", 200),
   ]);
-  assert.equal(bounded.togetherRequests.filter(row => row.scope === "agent").length, 250);
-  assert.deepEqual(bounded.togetherRequests.filter(row => row.scope === "task").map(row => row.path), ["/v1/chat/completions"]);
-  assert.equal(bounded.togetherAgentTrafficTruncated, true);
+  assert.deepEqual(bounded.togetherRequests.map(row => row.path), ["/v1/chat/completions"]);
   assert.equal(bounded.togetherRequestsTruncated, false);
 
   // A record that does not list its API hosts keeps every row as a task call.
   const older = structuredClone(completeRecord);
   delete older.snapshot.target.egress;
   const unlisted = await project(older, [request(0, "api.anthropic.com", "/v1/messages", 200)]);
-  assert.equal(unlisted.togetherRequests[0].scope, "task");
+  assert.deepEqual(unlisted.togetherRequests.map(row => row.host), ["api.anthropic.com"]);
 });
 
 test("canonical dashboard explains Run Trust failures before downstream check symptoms", async () => {

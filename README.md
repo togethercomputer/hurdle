@@ -155,4 +155,5 @@ npm run hurdle -- run examples/copy-message/example.suite.mjs --view
 
 - [Authoring](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/authoring.md)
 - [Sandbox and storage setup](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/sandbox-setup.md)
+- [Changelog](https://cdn.jsdelivr.net/npm/hurdle@latest/CHANGELOG.md)
 - [Contributing](https://cdn.jsdelivr.net/npm/hurdle@latest/CONTRIBUTING.md) · [Security](https://cdn.jsdelivr.net/npm/hurdle@latest/SECURITY.md)
