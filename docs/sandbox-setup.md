@@ -35,12 +35,13 @@ requires trusted HTTP capture from E2B or Together, so a Native Local runtime ca
 Configure `E2B_API_KEY`, `TOGETHER_API_KEY` and Agent credentials in `.env.local`
 or export them before setup. Together sandbox setup (`--sandbox together`) needs
 no `E2B_API_KEY`. Exported values are not copied into the file.
-Setup adds `.env.local`, `.hurdle/`, and legacy `.tae/` to `.gitignore` when
-configuration succeeds. For the same variable name, file values override exports; a blank
-assignment overrides a working exported value too. Use `--interactive` explicitly
-for hidden credential prompts and an image build confirmation in a terminal;
-prompted values are saved with private file permissions after readiness and
-any required build acceptance, before the build starts.
+`init`, and setup once configuration succeeds, add `.env.local`, `.hurdle/`,
+and legacy `.tae/` to the end of `.gitignore` unless they are already there.
+For the same variable name, file values override exports; a blank assignment
+overrides a working exported value too. Use `--interactive` explicitly for hidden
+credential prompts and an image build confirmation in a terminal; prompted values
+are saved with private file permissions after readiness and any required build
+acceptance, before the build starts.
 
 Claude Code uses `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; Codex uses
 `CODEX_API_KEY` or `OPENAI_API_KEY`. Use

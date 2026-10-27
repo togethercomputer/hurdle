@@ -1,4 +1,4 @@
-![Hurdle. Test how Claude Code and Codex use your API, SDK, or docs.](https://cdn.jsdelivr.net/npm/hurdle@0.2.9/docs/assets/readme-hero.png)
+![Hurdle. Test how Claude Code and Codex use your API, SDK, or docs.](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/assets/readme-hero.png)
 
 # Hurdle
 
@@ -7,9 +7,10 @@ API calls, tool use, and artifacts in the results viewer.
 
 ## Quick start
 
-Install Node.js 22.18+ and Claude Code, then create an evaluation:
+Install Node.js 22.18+ and the Claude Code CLI, then create an evaluation:
 
 ```sh
+npm install -g @anthropic-ai/claude-code
 mkdir my-evals && cd my-evals
 npx hurdle init
 ```
@@ -27,8 +28,9 @@ npx hurdle validate
 npx hurdle run --view
 ```
 
-Local execution is not a security sandbox. Use trusted tasks and keep `.env.local`
-out of version control. Agent usage may be billed.
+Local execution is not a security sandbox. Use trusted tasks. `init` adds
+`.env.local` and `.hurdle/` to `.gitignore`; keep `.env.local` out of version
+control. Agent usage may be billed.
 
 Results are saved in `.hurdle/`. Reopen them with `npx hurdle view`, adding
 `--port 3001` if port 3000 is busy.
@@ -40,7 +42,16 @@ Results are saved in `.hurdle/`. Reopen them with `npx hurdle view`, adding
 | Claude Code | `npx hurdle init` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` |
 | Codex | `npx hurdle init --agent codex` | `OPENAI_API_KEY` |
 
-Install the selected agent CLI. Generate a Claude subscription token with `claude setup-token`.
+Local runs use the `claude` or `codex` command on your `PATH`. Install the one you
+need, and update Codex if `validate` says it does not list the starter model:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+npm install -g @openai/codex
+```
+
+Sandbox runs install the Agent CLI in the sandbox image, so they need no local
+install. Generate a Claude subscription token with `claude setup-token`.
 Codex runs with an OpenAI API key only (`OPENAI_API_KEY` or `CODEX_API_KEY`), not a ChatGPT login.
 
 Starters use Opus 5.5 or GPT-6.1 Sol with medium effort. Discover other models:

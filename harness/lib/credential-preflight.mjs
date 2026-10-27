@@ -117,14 +117,16 @@ export async function checkTogetherCredential(apiKey, { fetch = globalThis.fetch
   }
 }
 
+const E2B_KEYS_URL = "https://console.e2b.dev/?tab=keys";
+
 // Only 401/403 prove a bad key; rate limits, timeouts and outages are retried
 // once and then reported as unavailability rather than a rejected credential.
 function e2bRejected(error) {
   return error?.name === "AuthenticationError" || /^403\b/.test(String(error?.message ?? ""));
 }
 
-export async function checkE2bCredential(apiKey, { loadE2b, retryDelayMs = 1_000 } = {}) {
-  if (!apiKey?.trim()) return result("E2B", "skip", "E2B_API_KEY is not set");
+export async function checkE2bCredential(apiKey, { loadE2b, retryDelayMs = 1_000, name = "E2B_API_KEY" } = {}) {
+  if (!apiKey?.trim()) return result("E2B", "skip", `${name} is not set`);
   let Sandbox;
   try {
     ({ Sandbox } = await (loadE2b ?? (() => import("e2b")))());
@@ -140,7 +142,7 @@ export async function checkE2bCredential(apiKey, { loadE2b, retryDelayMs = 1_000
       await paginator.nextItems();
       return result("E2B", "pass", "account access succeeded; no sandbox was created");
     } catch (error) {
-      if (e2bRejected(error)) return result("E2B", "fail", "credential or account access was rejected");
+      if (e2bRejected(error)) return result("E2B", "fail", `${name} was rejected (bad key or no account access); set a valid ${name} in .env.local from ${E2B_KEYS_URL}`);
       if (attempt >= 2) return result("E2B", "fail", "E2B could not be reached or returned an error; check your network and retry");
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }

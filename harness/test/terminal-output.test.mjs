@@ -42,7 +42,7 @@ test("init, validation, setup, and help share terminal styling without ANSI in r
     assert.match(text, /✓ Evaluation created/);
     assert.match(text, /! Readiness not checked/);
     assert.match(text, /✗ hurdle \[setup\.credentials-missing\] Missing credentials: E2B_API_KEY; ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; TOGETHER_API_KEY\./);
-    assert.ok(text.includes(`Next      ${sourceExecutable} setup ${name}/example.suite.mjs`));
+    assert.ok(text.includes(`Next      ${sourceExecutable} setup ${name}/example.suite.mjs --yes\n`));
     assert.equal(existsSync(join(root, ".hurdle")), false);
     if (isTTY && !noColor) {
       assert.match(raw.stdout, /\u001b\[1mHurdle/);
@@ -69,7 +69,7 @@ test("custom-suite next steps are concise and round-trip shell metacharacters sa
     const command = line.slice(line.indexOf(sourceExecutable));
     const parsed = spawnSync("/bin/sh", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], { cwd: root, encoding: "utf8" });
     assert.equal(parsed.status, 0, parsed.stderr);
-    assert.deepEqual(parsed.stdout.trimEnd().split("\n"), ["node", cliPath, command.includes(" setup ") ? "setup" : "run", suite, ...(command.endsWith(" --view") ? ["--view"] : [])]);
+    assert.deepEqual(parsed.stdout.trimEnd().split("\n"), ["node", cliPath, command.includes(" setup ") ? "setup" : "run", suite, ...(command.endsWith(" --view") ? ["--view"] : command.endsWith(" --yes") ? ["--yes"] : [])]);
   }
   assert.equal(existsSync(join(root, "unexpected")), false);
   assert.equal(quoteCommandArgument("evals/together-api/example.suite.mjs"), "evals/together-api/example.suite.mjs");

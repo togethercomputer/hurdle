@@ -9,6 +9,7 @@ function versionId(record) {
 }
 
 import { projectRunCost } from "./run-cost.mjs";
+import { apiCallScope, taskApiHosts } from "./api-calls.mjs";
 import { projectAgentUsage, readTranscriptAgentUsage } from "./session-usage.mjs";
 
 import { projectEvaluatorSourceSummaries } from "./canonical-results.mjs";
@@ -262,9 +263,13 @@ function projectRequest(request) {
 }
 
 async function togetherRequests(reader, record) {
-  if (record.state !== "complete") return { rows: [], truncated: false };
+  if (record.state !== "complete") return { rows: [], truncated: false, agentTruncated: false };
   const projected = [];
-  let truncated = false;
+  // Task calls and the Agent's own traffic are bounded separately, so a long
+  // run's model calls cannot push the Task's calls out of the Viewer.
+  const counts = { task: 0, agent: 0 };
+  const full = { task: false, agent: false };
+  const taskHosts = taskApiHosts(record.snapshot);
   outer:
   for (const entry of record.evidence?.egress ?? []) {
     const reference = entry.status === "captured" ? entry.content : null;
@@ -289,17 +294,20 @@ async function togetherRequests(reader, record) {
       for (const request of body.requests) {
         const row = projectRequest(request);
         if (!row) continue;
-        if (projected.length >= MAX_CANONICAL_DASHBOARD_REQUESTS) {
-          truncated = true;
-          break outer;
+        const scope = apiCallScope(row.host, taskHosts);
+        if (counts[scope] >= MAX_CANONICAL_DASHBOARD_REQUESTS) {
+          full[scope] = true;
+          if (full.task && full.agent) break outer;
+          continue;
         }
-        projected.push(row);
+        counts[scope] += 1;
+        projected.push({ ...row, scope });
       }
     } catch {
       // Evidence remains available from the immutable record when presentation fails.
     }
   }
-  return { rows: projected, truncated };
+  return { rows: projected, truncated: full.task, agentTruncated: full.agent };
 }
 
 async function projectDetail(reader, record) {
@@ -327,6 +335,7 @@ async function projectDetail(reader, record) {
     judgeStatusLabel: judgeStatusLabel(record),
     togetherRequests: requestProjection.rows,
     togetherRequestsTruncated: requestProjection.truncated,
+    togetherAgentTrafficTruncated: requestProjection.agentTruncated,
     docsCandidates: [],
     discovery: null,
     storedChecks: record.state === "complete" ? record.checks : [],

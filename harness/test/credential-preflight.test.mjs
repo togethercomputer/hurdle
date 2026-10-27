@@ -141,9 +141,13 @@ test("E2B preflight retries a transient failure and blames the key only when rej
   for (const failure of [error("AuthenticationError", "401: Invalid API key"), error("SandboxError", "403: Forbidden")]) {
     const rejected = sdk([failure]);
     const result = await checkE2bCredential("secret-e2b", { ...rejected, retryDelayMs: 0 });
-    assert.equal(result.message, "credential or account access was rejected");
+    assert.equal(result.message, "E2B_API_KEY was rejected (bad key or no account access); set a valid E2B_API_KEY in .env.local from https://console.e2b.dev/?tab=keys");
+    assert.doesNotMatch(result.message, /secret-e2b/);
     assert.equal(rejected.calls(), 1);
   }
+  // A Runtime can read the key from another variable; name that one.
+  const renamed = await checkE2bCredential("secret-e2b", { ...sdk([error("AuthenticationError", "401")]), retryDelayMs: 0, name: "TEAM_E2B_KEY" });
+  assert.match(renamed.message, /^TEAM_E2B_KEY was rejected .* set a valid TEAM_E2B_KEY in \.env\.local/);
 });
 
 test("Postgres preflight is read-only and reports migration state", async () => {

@@ -9,7 +9,7 @@ Create the example in your project, then use the default E2B sandbox:
 
 ```sh
 npx hurdle init concurrent-tasks --example concurrency-smoke
-npx hurdle setup concurrent-tasks
+npx hurdle setup concurrent-tasks --yes
 npx hurdle run concurrent-tasks --view
 ```
 
@@ -22,7 +22,7 @@ to setup and provide `TOGETHER_API_KEY`; it then uses up to three VMs.
 From the Hurdle repository, you can run the bundled example directly:
 
 ```sh
-npx hurdle setup examples/concurrency-smoke/example.suite.mjs
+npx hurdle setup examples/concurrency-smoke/example.suite.mjs --yes
 npx hurdle run examples/concurrency-smoke/example.suite.mjs --view
 ```
 

@@ -141,7 +141,7 @@ test("remote readiness diagnoses account failures and blocks unconfigured stores
       allowResultStoreSetup: mode === "sandbox-setup",
     }, {
       probeCli() { assert.fail("Local executable does not establish remote readiness"); },
-      checkE2b: async key => { assert.equal(key, "sandbox-key"); return { status: "pass", message: "account accessible" }; },
+      checkE2b: async (key, { name }) => { assert.equal(key, "sandbox-key"); assert.equal(name, "REMOTE_KEY"); return { status: "pass", message: "account accessible" }; },
       checkTogetherSandbox: async key => { assert.equal(key, "sandbox-key"); return { status: "pass", message: "account accessible" }; },
       findHostGuardian: () => ({}),
       checkPostgres: async value => { assert.equal(value, "postgres-secret"); return mode === "connection"
@@ -179,7 +179,7 @@ test("Hurdle-built sandbox images must hold the selected Agents and current CLIs
   assert.equal(checked.ok, false);
   assert.equal(checked.image[0].code, "runtime.image-agent-missing");
   assert.match(checked.image[0].message, /E2B template hurdle-claude-code:v1 has no Codex CLI/);
-  assert.match(checked.image[0].message, /setup evals\/codex\.suite\.mjs --sandbox e2b` to build hurdle-claude-code-codex:v2/);
+  assert.match(checked.image[0].message, /setup evals\/codex\.suite\.mjs --sandbox e2b --yes` to build hurdle-claude-code-codex:v2/);
 
   checked = await check("e2b", { workloadTemplate: "hurdle-codex:v1" }, "codex");
   assert.equal(checked.ok, true, "an older CLI still runs");
@@ -189,7 +189,7 @@ test("Hurdle-built sandbox images must hold the selected Agents and current CLIs
 
   checked = await check("together", { snapshotAlias: "hurdle-claude-code-codex-network@v1" }, "claude-code");
   assert.equal(checked.image[0].code, "runtime.image-outdated");
-  assert.match(checked.image[0].message, /Together snapshot .* --sandbox together` to build hurdle-claude-code-codex-network@v2/);
+  assert.match(checked.image[0].message, /Together snapshot .* --sandbox together --yes` to build hurdle-claude-code-codex-network@v2/);
 
   // Without an alias, Together's own Hurdle image is Together's to keep current.
   for (const [kind, settings, adapterId] of [

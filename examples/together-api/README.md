@@ -27,8 +27,10 @@ inference or the evaluation. Remote tools and model access remain unverified
 until the run.
 
 The starter pins `claude-opus-5-5` with `effort: "medium"`. Use
-`init --example together-api --agent codex` for `gpt-6.1-sol` with medium effort.
-Use `init --model MODEL --effort LEVEL` or edit the Suite to change these settings.
+`npx hurdle init codex-api-evals --example together-api --agent codex` for
+`gpt-6.1-sol` with medium effort. Use
+`npx hurdle init DIRECTORY --example together-api --model MODEL --effort LEVEL`
+or edit the Suite to change these settings.
 
 The Suite uses one task, one baseline condition, and one repeat, with code
 scoring and no Judge. E2B setup requires `E2B_API_KEY` and uses two sandboxes,

@@ -41,6 +41,7 @@ import { projectRuntimePath, setupSandbox } from "../lib/sandbox-setup.mjs";
 import { setupTogetherSandbox } from "../lib/together-sandbox-setup.mjs";
 import { setupPostgresStore } from "../lib/postgres-setup.mjs";
 import { createSetupOutput } from "../lib/setup-output.mjs";
+import { ignoreProjectFiles } from "../lib/setup-project-files.mjs";
 import { createViewerOnboarding } from "../lib/viewer-onboarding.mjs";
 import { defaultProjectSuite, discoverProjectSuites, resolveProjectSuite } from "../lib/project-suites.mjs";
 import { selectSuiteAgents } from "../lib/suite-agent-selection.mjs";
@@ -188,6 +189,7 @@ const HELP_TEXT = Object.freeze({
     "Create a starter evaluation. The default directory is `evals`.",
     "The destination must not already exist; its parent directory must exist.",
     "Starters pin Claude Opus 5.5 or GPT-6.1 Sol with medium reasoning effort.",
+    "Init adds .env.local, .hurdle/ and .tae/ to .gitignore in the current directory.",
     "",
     "Credentials come from .env.local or exported environment variables.",
     "Interactive Agent logins are not inherited. Claude Code uses",
@@ -1089,17 +1091,26 @@ async function runCliMain(argv, io, dependencies) {
     }
     const suite = `${directory.replace(/\/$/, "")}/example.suite.mjs`;
     const useColor = runOutputUsesColor(io);
+    // The Local quickstart never runs setup, so init keeps .env.local out of git too.
+    let ignored;
+    try {
+      ignored = await ignoreProjectFiles(io.cwd) ? "Added .env.local and .hurdle/ to .gitignore" : null;
+    } catch {
+      ignored = "Could not update .gitignore; add /.env.local and /.hurdle/ to it yourself";
+    }
     io.stdout.write(terminalHeader(io.stdout)
       + terminalStatus("pass", "Evaluation created", io.stdout) + "\n"
       + runFact("Suite", suite, { useColor })
       + runFact("Agent", AGENT_LABELS[agent], { useColor })
       + runFact("Model", model, { useColor })
       + runFact("Effort", effort, { useColor })
-      + (example === "together-api" ? runFact("Needs", "E2B sandbox + TOGETHER_API_KEY", { useColor }) : "")
+      + (example === "together-api" ? runFact("Needs", "E2B or Together sandbox + TOGETHER_API_KEY", { useColor }) : "")
       + runFact("Auth", `.env.local or shell · see ${cliExecutable(io.cwd)} help init`, { useColor })
-      + runFact("Usage", example === "together-api" ? "Agent, E2B sandbox, and Together API may be billed" : "Agent may be billed", { useColor })
+      + (ignored ? runFact("Git", ignored, { useColor }) : "")
+      + runFact("Usage", example === "together-api" ? "Agent, sandbox, and Together API may be billed" : "Agent may be billed", { useColor })
       + terminalNext([
-        suiteCommand(example === "together-api" ? "setup" : "validate", suite, { cwd: io.cwd }),
+        // Without --yes, setup stops before building a missing sandbox image.
+        example === "together-api" ? `${suiteCommand("setup", suite, { cwd: io.cwd })} --yes` : suiteCommand("validate", suite, { cwd: io.cwd }),
         suiteCommand("run", suite, { view: true, cwd: io.cwd }),
       ], io.stdout));
     return 0;
@@ -1310,7 +1321,7 @@ async function runCliMain(argv, io, dependencies) {
         "environment.trusted-egress-capture", "environment.trusted-request-blocking",
       ].includes(requirement))
     ))) {
-      writeError(io, `hurdle [runtime.capture-required] Selected Tasks require trusted API capture or request blocking. Run \`${suiteCommand("setup", options.suite, { cwd: io.cwd })}\` to configure E2B sandbox, or select an E2B or Together Runtime with --runtime. No evaluation started.\n`);
+      writeError(io, `hurdle [runtime.capture-required] Selected Tasks require trusted API capture or request blocking. Run \`${suiteCommand("setup", options.suite, { cwd: io.cwd })} --yes\` to configure E2B sandbox, or select an E2B or Together Runtime with --runtime. No evaluation started.\n`);
       disposeAuthoredSuite();
       return 1;
     }

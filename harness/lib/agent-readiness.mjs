@@ -46,7 +46,7 @@ function checkManagedImage(environment, adapterIds, setup) {
   if (!managed) return null;
   const label = `${together ? "Together snapshot" : "E2B template"} ${image}`;
   const agents = [...new Set([...managed.agents, ...adapterIds])];
-  const rebuild = `Run \`${setup} --sandbox ${provider}\` to build ${managedImageName(agents, provider, { network: managed.network })}.`;
+  const rebuild = `Run \`${setup} --sandbox ${provider} --yes\` to build ${managedImageName(agents, provider, { network: managed.network })}.`;
   const missing = adapterIds.filter(id => !managed.agents.includes(id));
   if (missing.length) {
     return result("fail", "runtime.image-agent-missing", `${label} has no ${missing.map(id => AGENT_LABELS[id]).join(" or ")} CLI. ${rebuild}`);
@@ -173,7 +173,7 @@ export async function checkAgentReadiness({
     if (checked) checks.push(checked);
   }
   if (runtimeProfile.environment.kind === "e2b") {
-    const checked = await checkE2b(runtimeEnv[runtimeProfile.environment.apiKeyEnv]);
+    const checked = await checkE2b(runtimeEnv[runtimeProfile.environment.apiKeyEnv], { name: runtimeProfile.environment.apiKeyEnv });
     checks.push(result(checked.status === "pass" ? "pass" : "fail", "runtime.e2b", `E2B: ${checked.message}.`));
   }
   if (runtimeProfile.environment.kind === "together") {
@@ -185,7 +185,7 @@ export async function checkAgentReadiness({
     if (!allowHostGuardianSetup) {
       checks.push(findHostGuardian()
         ? result("pass", "runtime.host-guardian", "Egress Guardian installed on this machine.")
-        : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })} --sandbox together.`));
+        : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })} --sandbox together --yes.`));
     }
   }
   if (runtimeProfile.resultStore.kind === "postgres") {
