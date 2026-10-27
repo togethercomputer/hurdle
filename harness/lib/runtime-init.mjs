@@ -40,14 +40,19 @@ export function createRuntimeConfig(mode, { template, snapshot } = {}) {
   }
   const usesE2b = mode === "e2b" || mode === "e2b-postgres";
   const usesTogether = mode === "together" || mode === "together-postgres";
-  if (usesTogether && (typeof snapshot !== "string" || !snapshot.trim())) throw new TypeError("Together runtime requires a snapshot alias.");
+  if (usesTogether && snapshot !== undefined && (typeof snapshot !== "string" || !snapshot.trim())) throw new TypeError("Together snapshot alias must not be empty.");
   if (usesE2b && (typeof template !== "string" || !template.trim())) {
     throw new TypeError("E2B runtime requires a workload template.");
   }
   const usesPostgres = mode.endsWith("postgres");
+  // Without a snapshot alias, runs use Together's Hurdle image over its socket.
+  const togetherSettings = {
+    ...(snapshot ? { snapshotAlias: snapshot.trim(), cpuCount: 1, memoryMiB: 2048 } : {}),
+    maxLifetimeMs: 3_600_000,
+  };
   return Object.freeze({
     schemaVersion: 1,
-    environment: usesE2b ? e2bEnvironment(template.trim()) : usesTogether ? { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: { snapshotAlias: snapshot.trim(), cpuCount: 1, memoryMiB: 2048, maxLifetimeMs: 3_600_000 } } : localEnvironment(),
+    environment: usesE2b ? e2bEnvironment(template.trim()) : usesTogether ? { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: togetherSettings } : localEnvironment(),
     resultStore: usesPostgres ? postgresStore() : usesTogether ? { kind: "local", root: "../together-results-v1" } : localStore(),
     judge: {
       kind: "anthropic-json-v1",

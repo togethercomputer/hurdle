@@ -167,9 +167,11 @@ replacement of the legacy runner.
 
 Together execution can use filesystem or Postgres storage through the same
 Runtime API. Run `hurdle setup --sandbox together --yes` for an artifact-only
-Suite, or initialize `together` / `together-postgres` with `--snapshot ALIAS`.
+Suite, or initialize `together` / `together-postgres`; nothing is built, since
+runs use Together's own Hurdle image. Add `--snapshot ALIAS` to run a
+caller-owned snapshot on the Together sandbox API instead.
 Read [Together sandbox setup and limitations](./sandbox-setup.md#together-sandbox)
-before use. Together API Suites use a separate Guardian VM for the same trusted
-capture, request blocking and Task credential substitution as E2B. Unlike E2B,
-Together sandbox still places the Agent's own model credential in the Agent VM;
-see [where credentials live](./sandbox-setup.md#where-credentials-live).
+before use. Together runs the egress Guardian on the controller machine, routing
+all sandbox traffic through it, for the same trusted capture, request blocking
+and credential substitution as E2B with one VM per cell. See
+[where credentials live](./sandbox-setup.md#where-credentials-live).

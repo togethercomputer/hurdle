@@ -349,7 +349,7 @@ for (const [authName, credential, standInPrefix] of [
 
     assert.notEqual(result.status, "invalid", JSON.stringify(result));
     assert.ok(observedRun);
-    const standIn = `${standInPrefix}hurdle_agent_stand_in_claude-e2b-entropy`;
+    const standIn = `${standInPrefix}claude-e2b-entropy`;
     assert.equal(observedRun.environment[authName], standIn);
     assert.doesNotMatch(JSON.stringify(observedRun.environment), new RegExp(credential));
     assert.equal(observedRun.environment.TOGETHER_API_KEY, "tae_visible_claude-e2b-entropy");
@@ -518,12 +518,12 @@ test("Codex composes with E2B through the canonical Together path", async (t) =>
   // The real Codex key stays with the Guardian; the Agent's VM sees a stand-in.
   assert.equal(
     observedRun.environment.CODEX_API_KEY,
-    "hurdle_agent_stand_in_codex-e2b-surrogate",
+    "codex-e2b-surrogate",
   );
   assert.doesNotMatch(JSON.stringify(observedRun.environment), new RegExp(secrets.codex));
   assert.deepEqual(runtime.preparedAgentCredentials, [{
     environmentName: "CODEX_API_KEY",
-    surrogate: "hurdle_agent_stand_in_codex-e2b-surrogate",
+    surrogate: "codex-e2b-surrogate",
     value: secrets.codex,
     hosts: ["api.openai.com"],
     headerNames: ["authorization"],
