@@ -6,10 +6,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { asset } from "./execution-environments/e2b-guardian.mjs";
+import { asset } from "./execution-environments/guardian.mjs";
 
-// The controller-host Guardian runs the same hash-locked mitmproxy as the E2B
-// Guardian VM. Setup installs it once per lock into the user's cache.
+// The controller-host Guardian runs a hash-locked mitmproxy. Setup installs
+// it once per lock into the user's cache.
 const run = promisify(execFile);
 const UV_VERSION = "0.11.31";
 const UV_ARCHIVES = Object.freeze({
@@ -45,7 +45,7 @@ export function hostGuardianRuntimePaths({ cacheRoot = defaultCacheRoot() } = {}
 
 export function hostGuardianRuntimeError() {
   return Object.assign(
-    new Error("The controller-host Guardian is not installed. Run setup --sandbox together to install it."),
+    new Error("The controller-host Guardian is not installed. Run setup to install it."),
     { code: "environment.host-guardian-missing" },
   );
 }

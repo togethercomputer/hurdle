@@ -1,9 +1,8 @@
 # Copy a message
 
 A product-neutral code-checked Task. It needs the selected Agent's authentication,
-but no Judge or database. Local execution needs no sandbox account; E2B
-sandbox execution, the setup default, needs `E2B_API_KEY`, and Together sandbox
-execution needs `TOGETHER_API_KEY`. The default Claude starter pins
+but no Judge or database. Local execution needs no sandbox account; Together
+sandbox execution needs `TOGETHER_API_KEY`. The default Claude starter pins
 `claude-opus-5-5` with medium effort. Use
 `npx hurdle init codex-evals --agent codex` for a Codex starter in `codex-evals/`
 that pins `gpt-6.1-sol` with medium effort. Use
@@ -47,23 +46,19 @@ sandbox. Use only trusted Suites, checks and task inputs.
 
 ## Run the Suite in a sandbox
 
-From your project directory, add `E2B_API_KEY` to `.env.local`, then run:
+From your project directory, add `TOGETHER_API_KEY` to `.env.local`, then run:
 
 ```sh
-npx hurdle setup --yes
+npx hurdle setup
 npx hurdle run --view
 ```
 
-To use Together sandbox instead, add `TOGETHER_API_KEY` and run
-`npx hurdle setup --sandbox together --yes`; it needs no E2B key. If you created
-the starter in another directory, pass that directory to each command, for
-example `npx hurdle setup codex-evals --yes`. From the Hurdle repository root,
-pass `examples/copy-message/example.suite.mjs` instead and replace `npx hurdle`
-with `node harness/bin/hurdle.mjs`.
+If you created the starter in another directory, pass that directory to each
+command, for example `npx hurdle setup codex-evals`. From the Hurdle repository
+root, pass `examples/copy-message/example.suite.mjs` instead and replace
+`npx hurdle` with `node harness/bin/hurdle.mjs`.
 
-Setup uses E2B by default: it builds or reuses the Agent template and saves the
-Runtime. E2B runs each cell with a workload VM and a Guardian VM; the Agent's
-own API key stays in the Guardian and the workload sees only a stand-in.
-Together sandbox setup builds or reuses an Agent snapshot, and copy-message uses
-only an Agent VM there. After setup, `npx hurdle run` uses the saved sandbox
-Runtime. Agent inference, image builds, and sandbox use may be billed.
+Setup configures the Together sandbox and saves the Runtime; nothing is built.
+Each cell runs in one VM; the Agent's own API key stays in the Guardian on your
+machine and the workload sees only a stand-in. After setup, `npx hurdle run`
+uses the saved sandbox Runtime. Agent inference and sandbox use may be billed.

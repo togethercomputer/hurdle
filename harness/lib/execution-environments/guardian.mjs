@@ -1,20 +1,15 @@
-import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { sha256 } from "../run-model.mjs";
 
 const CAPTURE_ROOT = "/tmp/tae-egress";
-const PROXY_PATH = `${CAPTURE_ROOT}/generic_guardian.py`;
-const LOG_PATH = `${CAPTURE_ROOT}/requests.jsonl`;
 const CA_PATH = `${CAPTURE_ROOT}/guardian-ca.pem`;
 export const CA_BUNDLE_PATH = `${CAPTURE_ROOT}/ca-bundle.pem`;
 const PYTHON_ROOT = `${CAPTURE_ROOT}/python`;
 const NODE_ROOT = `${CAPTURE_ROOT}/node`;
 const NODE_BOOTSTRAP_PATH = `${NODE_ROOT}/node_proxy_bootstrap.cjs`;
 export const BRIDGE_PATH = `${NODE_ROOT}/tcp_ws_bridge.cjs`;
-const PROXY_PORT = 18080;
-const BRIDGE_PORT = 18081;
 export const RELAY_PORT = 18082;
 export const CONTROL_HOST = "tae-egress-control.invalid";
 export const CONTROL_PREFIX = "/__tae_egress_control__";
@@ -22,23 +17,13 @@ export const PROCESS_TIMEOUT_MS = 86_400_000;
 export const MAX_CAPTURE_ROWS = 10_000;
 export const MAX_CAPTURE_BYTES = 15 * 1024 * 1024;
 const MAX_CAPTURE_PATH_BYTES = 4096;
-const UV_VERSION = "0.11.31";
-const UV_LINUX_ARCHIVE = "uv-x86_64-unknown-linux-gnu.tar.gz";
-const UV_LINUX_SHA256 = "8cc1cd82d434ec565376f98bd938d4b715b5791a80ff2d3aa78821cf85091b4b";
-const UV_ARCHIVE_PATH = `${CAPTURE_ROOT}/${UV_LINUX_ARCHIVE}`;
-const UV_PATH = `${CAPTURE_ROOT}/uv`;
-const MITMPROXY_PYTHON = "3.12.12";
 
 export const asset = (...parts) => join(import.meta.dirname, "..", "..", "verify", "proxy", ...parts);
-const GENERIC_PROXY = readFileSync(asset("generic_guardian.py"), "utf8");
 const NODE_BOOTSTRAP = readFileSync(asset("node_proxy_bootstrap.cjs"), "utf8");
 const PYTHON_BOOTSTRAP = readFileSync(asset("python_proxy_bootstrap.py"), "utf8");
 const BRIDGE = readFileSync(asset("tcp_ws_bridge.cjs"), "utf8");
-const REQUIREMENTS = readFileSync(asset("guardian-requirements.lock"), "utf8");
 const AGENT_NODE_PACKAGE = readFileSync(asset("agent-node-runtime", "package.json"), "utf8");
 const AGENT_NODE_LOCK = readFileSync(asset("agent-node-runtime", "package-lock.json"), "utf8");
-const GUARDIAN_NODE_PACKAGE = readFileSync(asset("guardian-node-runtime", "package.json"), "utf8");
-const GUARDIAN_NODE_LOCK = readFileSync(asset("guardian-node-runtime", "package-lock.json"), "utf8");
 
 const EXCHANGE_FACT_PROFILE = "bounded-json-exchange-facts-v1";
 const SENSITIVE_POINTER_TERMS = Object.freeze([
@@ -180,7 +165,7 @@ export function assertExchangeFactCapturePolicy(policy) {
     "policyFingerprint",
     "profiles",
   ])) {
-    throw new TypeError("E2B exchange-fact capture is not supported by this profile");
+    throw new TypeError("Guardian exchange-fact capture is not supported by this profile");
   }
   if (
     policy.schemaVersion !== 1
@@ -191,7 +176,7 @@ export function assertExchangeFactCapturePolicy(policy) {
     || policy.profiles.length < 1
     || policy.profiles.length > 8
   ) {
-    throw new TypeError("E2B exchange-fact capture is not supported by this profile");
+    throw new TypeError("Guardian exchange-fact capture is not supported by this profile");
   }
   let selectorTotal = 0;
   const profileIds = new Set();
@@ -229,7 +214,7 @@ export function assertExchangeFactCapturePolicy(policy) {
       || !Array.isArray(profile.requestJson)
       || !Array.isArray(profile.responseJson)
     ) {
-      throw new TypeError("E2B exchange-fact capture is not supported by this profile");
+      throw new TypeError("Guardian exchange-fact capture is not supported by this profile");
     }
     profileIds.add(profile.id);
     const selectors = [...profile.requestJson, ...profile.responseJson];
@@ -240,7 +225,7 @@ export function assertExchangeFactCapturePolicy(policy) {
       || new Set(profile.responseJson.map(({ id }) => id)).size !== profile.responseJson.length
       || selectors.some((selector) => !validSelector(selector))
     ) {
-      throw new TypeError("E2B exchange-fact capture is not supported by this profile");
+      throw new TypeError("Guardian exchange-fact capture is not supported by this profile");
     }
     selectorTotal += selectors.length;
   }
@@ -250,7 +235,7 @@ export function assertExchangeFactCapturePolicy(policy) {
       policy.profiles.slice(index + 1).some((other) => profilesOverlap(profile, other))
     ))
   ) {
-    throw new TypeError("E2B exchange-fact capture is not supported by this profile");
+    throw new TypeError("Guardian exchange-fact capture is not supported by this profile");
   }
   return policy;
 }
@@ -258,10 +243,10 @@ export function assertExchangeFactCapturePolicy(policy) {
 export function capturePolicy(capture) {
   if (capture?.mode === "none") {
     if (capture.exchangeFacts !== null && capture.exchangeFacts !== undefined) {
-      throw new TypeError("E2B exchange-fact capture requires egress capture");
+      throw new TypeError("Guardian exchange-fact capture requires egress capture");
     }
     if ((capture.blockedRequests?.length ?? 0) > 0) {
-      throw new TypeError("E2B request blocking requires egress capture");
+      throw new TypeError("Guardian request blocking requires egress capture");
     }
     return {
       hosts: [],
@@ -273,11 +258,11 @@ export function capturePolicy(capture) {
   if (
     !["http-egress-metadata-v1", "network-egress-metadata-v1"].includes(capture?.mode)
   ) {
-    throw new TypeError("E2B Guardian requires network egress metadata capture");
+    throw new TypeError("Guardian requires network egress metadata capture");
   }
   const protocols = [...(capture.protocols ?? ["http", "https"])];
   if (protocols.some((protocol) => !["http", "https", "wss"].includes(protocol))) {
-    throw new TypeError("E2B Guardian does not support a requested capture protocol");
+    throw new TypeError("Guardian does not support a requested capture protocol");
   }
   const hosts = capture.routes.map(({ host }) => host);
   const selectedResponseHeaders = Object.fromEntries(capture.routes.map(({
@@ -308,7 +293,7 @@ export function capturePolicy(capture) {
     || new Set(blockedRequests.map(({ method, path }) => `${method}\n${path}`)).size
       !== blockedRequests.length
   ) {
-    throw new TypeError("E2B request-blocking policy is invalid");
+    throw new TypeError("Guardian request-blocking policy is invalid");
   }
   return {
     hosts,
@@ -428,71 +413,6 @@ async function installNodeRuntime(sandbox, packageText, lockText, signal, bakedR
       : `npm --prefix ${NODE_ROOT} ci --ignore-scripts --no-audit --no-fund`,
     { timeoutMs: 120_000, signal },
   );
-}
-
-async function installProxyRuntime(sandbox, signal) {
-  await sandbox.commands.run(`mkdir -p ${CAPTURE_ROOT}`, { timeoutMs: 10_000, signal });
-  await sandbox.files.write(PROXY_PATH, GENERIC_PROXY, { signal });
-  await sandbox.files.write(
-    `${CAPTURE_ROOT}/guardian-requirements.lock`,
-    REQUIREMENTS,
-    { signal },
-  );
-  // The locked mitmproxy release requires Python 3.12, while E2B's base
-  // image currently exposes Python 3.11. Fetch and verify a pinned uv binary
-  // before using it to install the pinned interpreter and hashed proxy lock.
-  await sandbox.commands.run(`test "$(uname -m)" = x86_64 && \
-curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
---retry 6 --retry-all-errors --retry-max-time 120 --connect-timeout 20 \
---output ${UV_ARCHIVE_PATH} \
-https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/${UV_LINUX_ARCHIVE} && \
-printf '%s  %s\\n' ${UV_LINUX_SHA256} ${UV_ARCHIVE_PATH} \
-| sha256sum --check --strict - && \
-tar -xzf ${UV_ARCHIVE_PATH} -C ${CAPTURE_ROOT} && \
-install -m 0755 ${CAPTURE_ROOT}/uv-x86_64-unknown-linux-gnu/uv ${UV_PATH} && \
-${UV_PATH} --version | grep -F 'uv ${UV_VERSION}' && \
-${UV_PATH} python install '${MITMPROXY_PYTHON}' >/dev/null && \
-${UV_PATH} venv --clear --python '${MITMPROXY_PYTHON}' ${CAPTURE_ROOT}/venv >/dev/null && \
-${UV_PATH} pip install --python ${CAPTURE_ROOT}/venv/bin/python \
---require-hashes --no-deps --no-build \
--r ${CAPTURE_ROOT}/guardian-requirements.lock >/dev/null && \
-${CAPTURE_ROOT}/venv/bin/mitmdump --version | head -1`, {
-    timeoutMs: 360_000,
-    signal,
-  });
-  await installNodeRuntime(sandbox, GUARDIAN_NODE_PACKAGE, GUARDIAN_NODE_LOCK, signal);
-}
-
-async function generateCa(sandbox, signal) {
-  const processHandle = await sandbox.commands.run(
-    `exec ${CAPTURE_ROOT}/venv/bin/mitmdump -q --listen-host 127.0.0.1 --listen-port ${PROXY_PORT} --set upstream_cert=false --set confdir=/home/user/.mitmproxy`,
-    { background: true, timeoutMs: PROCESS_TIMEOUT_MS, signal },
-  );
-  let certificate;
-  try {
-    await waitForPort(sandbox, PROXY_PORT, "Guardian CA bootstrap", signal);
-    let lastError;
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      try {
-        certificate = await sandbox.files.read(
-          "/home/user/.mitmproxy/mitmproxy-ca-cert.pem",
-        );
-        break;
-      } catch (error) {
-        lastError = error;
-        if (attempt < 19) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-      }
-    }
-    if (certificate === undefined) throw lastError ?? new Error("Guardian CA is unavailable");
-  } finally {
-    await stopProcess(sandbox, processHandle, "Guardian CA bootstrap");
-  }
-  if (!certificate.includes("BEGIN CERTIFICATE") || certificate.includes("PRIVATE KEY")) {
-    throw new Error("Guardian returned invalid public CA material");
-  }
-  return certificate;
 }
 
 export async function installWorkloadTrust(workload, certificate, hosts, signal, firewallSuffix = "", firewallVerdict = "REJECT", { systemTrust = false, nodeRuntimeRoot = null, captureRouteFirewall = true } = {}) {
@@ -693,188 +613,4 @@ export function sealedJournalCollection(state, journal, producer) {
       trust: "environment-observed",
     },
   };
-}
-
-async function controlState(sandbox, token, action) {
-  const result = await sandbox.commands.run(`python3 - <<'PY'
-import http.client, json, os, socket
-host = ${JSON.stringify(CONTROL_HOST)}
-path = ${JSON.stringify(`${CONTROL_PREFIX}/`)} + os.environ["TAE_CONTROL_ACTION"]
-request = (f"GET http://{host}{path} HTTP/1.1\\r\\nHost: {host}\\r\\nX-Tae-Egress-Control: {os.environ['TAE_CONTROL_TOKEN']}\\r\\nConnection: close\\r\\n\\r\\n").encode("ascii")
-with socket.create_connection(("127.0.0.1", ${PROXY_PORT}), timeout=5) as connection:
-    connection.sendall(request)
-    response = http.client.HTTPResponse(connection)
-    response.begin()
-    body = response.read()
-    if response.status != 200:
-        raise SystemExit(f"control failed: {response.status}")
-print(body.decode("utf-8"))
-PY`, {
-    timeoutMs: 15_000,
-    envs: { TAE_CONTROL_TOKEN: token, TAE_CONTROL_ACTION: action },
-  });
-  return JSON.parse(result.stdout.trim().split("\n").at(-1));
-}
-
-// Both providers use the same proxy, credential substitutions, policy bounds,
-// public trust material, draining and digest/sequence-verified sealing.
-export function createExternalGuardianController({
-  producer = "e2b-guardian",
-  requiresTrafficAccessToken = true,
-  firewallSuffix = "",
-  firewallVerdict = "REJECT",
-  bridgeEnvironment = () => ({}),
-  workloadBridgeMode = "client",
-} = {}) {
-  return Object.freeze({
-    async prepare({
-      sandbox,
-      capture,
-      credentialBindings,
-      credentialValues,
-      surrogates,
-      agentCredentials = [],
-      profile,
-      signal,
-    }) {
-      if (profile !== "external-guardian-http-metadata-v1") {
-        throw new TypeError("unsupported external Guardian capture profile");
-      }
-      const {
-        hosts,
-        selectedResponseHeaders,
-        exchangeFacts,
-        blockedRequests,
-      } = capturePolicy(capture);
-      const { passthroughHosts, substitutions } = guardianSubstitutions({
-        credentialBindings,
-        credentialValues,
-        surrogates,
-        agentCredentials,
-        captureHosts: hosts,
-      });
-      const routedHosts = [...hosts, ...passthroughHosts];
-      await installProxyRuntime(sandbox, signal);
-      const caCertificate = await generateCa(sandbox, signal);
-      const bridgeToken = randomBytes(32).toString("base64url");
-      const controlToken = randomBytes(32).toString("base64url");
-      await sandbox.updateNetwork({
-        allowOut: routedHosts,
-        denyOut: ["0.0.0.0/0"],
-      }, { signal });
-      const proxyProcess = await sandbox.commands.run(
-        `exec ${CAPTURE_ROOT}/venv/bin/mitmdump -q -s ${PROXY_PATH} --listen-host 127.0.0.1 --listen-port ${PROXY_PORT} --set upstream_cert=false --set confdir=/home/user/.mitmproxy`,
-        {
-          background: true,
-          timeoutMs: PROCESS_TIMEOUT_MS,
-          signal,
-          envs: {
-            TAE_EGRESS_LOG: LOG_PATH,
-            TAE_EGRESS_CONTROL_TOKEN: controlToken,
-            TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(hosts),
-            TAE_EGRESS_PASSTHROUGH_HOSTS: JSON.stringify(passthroughHosts),
-            TAE_EGRESS_SELECTED_RESPONSE_HEADERS: JSON.stringify(
-              selectedResponseHeaders,
-            ),
-            TAE_EGRESS_EXCHANGE_FACTS: JSON.stringify(exchangeFacts),
-            TAE_EGRESS_BLOCKED_REQUESTS: JSON.stringify(blockedRequests),
-            TAE_EGRESS_SUBSTITUTIONS: JSON.stringify(substitutions),
-            TAE_EGRESS_MAX_ROWS: String(MAX_CAPTURE_ROWS),
-            TAE_EGRESS_MAX_BYTES: String(MAX_CAPTURE_BYTES),
-          },
-        },
-      );
-      await waitForPort(sandbox, PROXY_PORT, "Guardian proxy", signal);
-      const bridgeProcess = await sandbox.commands.run(
-        `exec node ${BRIDGE_PATH} server`,
-        {
-          background: true,
-          timeoutMs: PROCESS_TIMEOUT_MS,
-          signal,
-          envs: {
-            EGRESS_BRIDGE_CELL_TOKEN: bridgeToken,
-            EGRESS_BRIDGE_LISTEN_PORT: String(BRIDGE_PORT),
-            EGRESS_BRIDGE_TARGET_PORT: String(PROXY_PORT),
-          },
-        },
-      );
-      await waitForPort(sandbox, BRIDGE_PORT, "Guardian bridge", signal);
-      return {
-        bridgeProcess,
-        bridgeToken,
-        caCertificate,
-        controlToken,
-        guardianHost: sandbox.getHost(BRIDGE_PORT),
-        hosts,
-        routedHosts,
-        policyFingerprint: exchangeFacts?.policyFingerprint ?? null,
-        proxyProcess,
-        relayProcess: null,
-        workload: null,
-        workloadEnvironment: {},
-      };
-    },
-    async attach({ workload, sandbox, session, signal }) {
-      const trafficAccessToken = sandbox?.trafficAccessToken;
-      if (requiresTrafficAccessToken && (typeof trafficAccessToken !== "string" || !trafficAccessToken.trim())) {
-        throw new Error(
-          "Guardian requires restricted public traffic and a traffic access token",
-        );
-      }
-      // Firewall only the capture hosts: direct traffic to them would bypass
-      // evidence capture. A direct request to a pass-through host carries only
-      // a stand-in credential, so it fails authentication instead.
-      await installWorkloadTrust(
-        workload,
-        session.caCertificate,
-        session.hosts,
-        signal,
-        firewallSuffix,
-        firewallVerdict,
-      );
-      // The relay and the Agent's proxy bootstraps send every Guardian-routed
-      // host to the Guardian, both captured and pass-through.
-      const routedHosts = session.routedHosts ?? session.hosts;
-      session.workload = workload;
-      session.relayProcess = await workload.commands.run(
-        `exec node ${BRIDGE_PATH} ${workloadBridgeMode}`,
-        {
-          background: true,
-          timeoutMs: PROCESS_TIMEOUT_MS,
-          signal,
-          envs: {
-            EGRESS_BRIDGE_URL: `wss://${session.guardianHost}/proxy`,
-            ...(requiresTrafficAccessToken
-              ? { EGRESS_BRIDGE_TRAFFIC_TOKEN: trafficAccessToken }
-              : { EGRESS_BRIDGE_TRAFFIC_HEADER: "none" }),
-            EGRESS_BRIDGE_CELL_TOKEN: session.bridgeToken,
-            EGRESS_BRIDGE_LISTEN_PORT: String(RELAY_PORT),
-            EGRESS_BRIDGE_SELECTIVE_PROXY: "1",
-            TAE_EGRESS_CAPTURE_HOSTS: JSON.stringify(routedHosts),
-            ...bridgeEnvironment(session),
-          },
-        },
-      );
-      await waitForPort(workload, RELAY_PORT, "workload relay", signal);
-      session.workloadEnvironment = workloadProxyEnvironment(routedHosts);
-    },
-    async seal({ sandbox, session }) {
-      const state = await drainSealedGuardian(
-        (action) => controlState(sandbox, session.controlToken, action),
-        { policyFingerprint: session.policyFingerprint },
-      );
-      await stopProcess(sandbox, session.proxyProcess, "Guardian proxy");
-      await stopProcess(session.workload, session.relayProcess, "workload relay");
-      await stopProcess(sandbox, session.bridgeProcess, "Guardian bridge");
-      const journalInfo = await sandbox.files.getInfo(LOG_PATH);
-      if (journalInfo.size !== state.journalBytes || journalInfo.size > MAX_CAPTURE_BYTES) {
-        throw new Error("Guardian journal exceeded its sealed byte bound");
-      }
-      return sealedJournalCollection(state, await sandbox.files.read(LOG_PATH), producer);
-    },
-  });
-}
-
-export function createE2BGuardianController() {
-  return createExternalGuardianController();
 }

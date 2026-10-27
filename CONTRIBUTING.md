@@ -39,7 +39,7 @@ npm test
 npm run build
 ```
 
-These commands must not call paid Agent, Judge, E2B or Together services. If a
+These commands must not call paid Agent, Judge or Together services. If a
 live evaluation is genuinely needed, describe its scope and spending bound in
 the pull request before running it.
 

@@ -22,14 +22,12 @@ Removing it from Git history is not sufficient.
 
 Native Local runs execute Agent code on the host with network access. They are
 not a security sandbox, and a Local Agent can read every key in `.env.local`. The filesystem Result Store and loopback Viewer are the
-default preview path; E2B and Postgres remain opt-in beta backends. See the
+default preview path; Postgres remains an opt-in beta backend. See the
 [authoring guide](docs/authoring.md) for credential and evidence boundaries.
 
 Sandbox runs keep the Agent's own model credential and the Suite's API
-credential in the Guardian; the Agent's VM holds only stand-ins. On E2B the
-Guardian runs on E2B's infrastructure; on Together it runs on your machine. The one
-exception is a Together Runtime that names a `snapshotAlias`: there, a Suite's API
-credential for a Task without required request or tool checks or guards is
-readable inside the Agent's VM.
+credential in the Guardian, a process on your machine; the Agent's VM holds
+only stand-ins. The sandbox has no network of its own and reaches the Guardian
+over one socket; see [the Together Hurdle socket](docs/together-socket.md).
 [Where credentials live](docs/sandbox-setup.md#where-credentials-live) lists
 each case.

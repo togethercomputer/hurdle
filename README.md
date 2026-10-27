@@ -35,6 +35,40 @@ control. Agent usage may be billed.
 Results are saved in `.hurdle/`. Reopen them with `npx hurdle view`, adding
 `--port 3001` if port 3000 is busy.
 
+## Try the Together API
+
+Create a Together API key:
+
+1. Sign in to [Together](https://api.together.ai) and select your project.
+2. Open [API Keys](https://api.together.ai/settings/projects/~current/api-keys),
+   click **Create key**, name it `hurdle-evals`, then click **Create Key**.
+3. Copy the key immediately (it's shown only once).
+
+Add it to `.env.local` alongside your agent credential:
+
+```dotenv
+TOGETHER_API_KEY=your-together-api-key
+```
+
+Run the API example in a Together sandbox and inspect captured HTTP activity:
+
+```sh
+npx hurdle init api-evals --example together-api
+npx hurdle setup api-evals
+npx hurdle run api-evals --view
+```
+
+The agent lists models, makes a short completion, and saves `completion.json`.
+The sandbox has no network of its own. It reaches the world only through one
+socket back to a Guardian process on your machine; your keys never enter the
+sandbox, and the Guardian swaps them into requests on the way out. Nothing is
+built on your side. Sandbox and API usage may be billed.
+
+See [the Together Hurdle socket](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/together-socket.md)
+for the contract and
+[sandbox and storage setup](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/sandbox-setup.md)
+for Postgres.
+
 ## Choose an agent
 
 | Agent | Create a starter | Credential in `.env.local` |
@@ -63,40 +97,6 @@ npx hurdle models --agent codex
 
 See [authoring](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/authoring.md)
 for authentication options, model overrides, and reasoning effort.
-
-## Try the Together API
-
-Create a Together API key:
-
-1. Sign in to [Together](https://api.together.ai) and select your project.
-2. Open [API Keys](https://api.together.ai/settings/projects/~current/api-keys),
-   click **Create key**, name it `hurdle-evals`, then click **Create Key**.
-3. Copy the key immediately (it's shown only once).
-
-The example runs in an E2B sandbox by default. Copy an E2B API key from the
-[E2B console](https://console.e2b.dev/?tab=keys), then add both keys to
-`.env.local` alongside your agent credentials:
-
-```dotenv
-TOGETHER_API_KEY=your-together-api-key
-E2B_API_KEY=your-e2b-api-key
-```
-
-Run the API example in an E2B sandbox and inspect captured HTTP activity:
-
-```sh
-npx hurdle init api-evals --example together-api
-npx hurdle setup api-evals --yes
-npx hurdle run api-evals --view
-```
-
-The agent lists models, makes a short completion, and saves `completion.json`.
-Setup builds or reuses a sandbox image. Sandbox and API usage may be billed.
-To use Together Sandbox instead, run `npx hurdle setup api-evals --sandbox together --yes`;
-it needs no E2B key.
-
-See [sandbox and storage setup](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/sandbox-setup.md)
-for Together Sandbox, existing images, and Postgres.
 
 ## Tasks and checks
 

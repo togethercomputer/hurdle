@@ -162,7 +162,7 @@ test("Together host Guardian fails before allocation when its runtime is not ins
   const controller = createTogetherGuardianController({ findRuntime: () => null });
   await assert.rejects(
     controller.prepare({ capture: { mode: "none" }, ...credentials }),
-    (error) => error.code === "environment.host-guardian-missing" && /setup --sandbox together/.test(error.message),
+    (error) => error.code === "environment.host-guardian-missing" && /Run setup to install it/.test(error.message),
   );
 });
 

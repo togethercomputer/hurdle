@@ -242,7 +242,7 @@ test("TCP-over-WebSocket bridge preserves sequential and large binary streams", 
   }
 });
 
-test("Together bridge uses per-cell authentication without an SDK or E2B traffic token", async () => {
+test("Together bridge uses per-cell authentication without an SDK or traffic token", async () => {
   const echo = net.createServer(socket => socket.pipe(socket));
   const targetPort = await listen(echo);
   const guardianPort = await freePort(), agentPort = await freePort();

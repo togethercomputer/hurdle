@@ -17,7 +17,7 @@ import {
   writeLine,
 } from "./sandbox-socket-protocol.mjs";
 
-// Bartender's Hurdle API hands the controller one WebSocket to a fresh sandbox
+// Together's Hurdle API hands the controller one WebSocket to a fresh sandbox
 // and nothing else: no sandbox id, token or exec API. Everything crosses that
 // socket: task inputs are written, task steps run inside the sandbox
 // (sandbox-task.mjs), sealed results are read back, and the Agent's egress
@@ -310,7 +310,7 @@ export function createTogetherSocketProvider({
     async collectWorkspaceArtifactMetadata(resource) {
       return (await resource.step({ kind: "metadata" })).metadata;
     },
-    // Bartender terminates the sandbox when its connection ends.
+    // Together's Hurdle API terminates the sandbox when its connection ends.
     async dispose(resource) {
       resource.close();
     },

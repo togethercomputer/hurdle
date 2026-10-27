@@ -122,7 +122,7 @@ function projectEvent(value) {
       ? Object.freeze({ kind: value.kind, cell, executionId: value.executionId }) : null;
   }
   if (value.kind === "environment-status") {
-    if (!["e2b", "together"].includes(value.environmentId)
+    if (value.environmentId !== "together"
       || !boundedText(value.executionId)
       || typeof value.status !== "string"
       || !Object.hasOwn(ENVIRONMENT_STATUS_LABELS, value.status)) return null;
@@ -132,7 +132,7 @@ function projectEvent(value) {
   if (value.kind === "environment-resource-allocated") {
     const resource = value.resource;
     if (
-      !["e2b", "together"].includes(value.environmentId)
+      value.environmentId !== "together"
       || !boundedText(value.executionId)
       || !resource
       || typeof resource !== "object"

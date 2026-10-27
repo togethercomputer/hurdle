@@ -134,15 +134,13 @@ test("network failures, forbidden checks, and provider errors are not called inv
 });
 
 test("remote readiness diagnoses account failures and blocks unconfigured stores except during sandbox setup", async () => {
-  for (const provider of ["e2b", "together"]) for (const mode of ["connection", "schema", "sandbox-setup"]) {
+  for (const provider of ["together"]) for (const mode of ["connection", "schema", "sandbox-setup"]) {
     const checked = await checkAgentReadiness({
       ...input({ CLAUDE_CODE_OAUTH_TOKEN: "token", REMOTE_KEY: "sandbox-key", DATABASE_URL: "postgres-secret" }),
       runtimeProfile: { environment: { kind: provider, apiKeyEnv: "REMOTE_KEY" }, resultStore: { kind: "postgres", databaseUrlEnv: "DATABASE_URL" } },
       allowResultStoreSetup: mode === "sandbox-setup",
     }, {
       probeCli() { assert.fail("Local executable does not establish remote readiness"); },
-      checkE2b: async (key, { name }) => { assert.equal(key, "sandbox-key"); assert.equal(name, "REMOTE_KEY"); return { status: "pass", message: "account accessible" }; },
-      checkTogetherSandbox: async key => { assert.equal(key, "sandbox-key"); return { status: "pass", message: "account accessible" }; },
       findHostGuardian: () => ({}),
       checkPostgres: async value => { assert.equal(value, "postgres-secret"); return mode === "connection"
         ? { status: "fail", message: "connection unavailable" }
@@ -153,56 +151,9 @@ test("remote readiness diagnoses account failures and blocks unconfigured stores
     assert.equal(store.status, mode === "sandbox-setup" ? "warning" : "fail");
     const remote = checked.checks.find(value => value.code === "agent.remote-unverified");
     assert.equal(remote.status, "skip");
-    assert.equal(remote.message, `Claude Code runs inside the ${provider === "together" ? "Together" : "E2B"} sandbox; no local CLI installation needed.`);
+    assert.equal(remote.message, "Claude Code runs inside the Together sandbox; no local CLI installation needed.");
+    assert.equal(checked.checks.find(value => value.code === "runtime.together").status, "skip");
     assert.doesNotMatch(JSON.stringify(checked), /postgres-secret|availability will be checked/);
-  }
-});
-
-test("Hurdle-built sandbox images must hold the selected Agents and current CLIs", async () => {
-  const remote = {
-    probeCli() { assert.fail("Remote readiness does not probe a local CLI"); },
-    fetch: async () => success(),
-    checkE2b: async () => ({ status: "pass", message: "account accessible" }),
-    checkTogetherSandbox: async () => ({ status: "pass", message: "account accessible" }),
-    findHostGuardian: () => ({}),
-  };
-  const check = async (kind, settings, adapterId) => {
-    const checked = await checkAgentReadiness({
-      ...input({ OPENAI_API_KEY: "key", ANTHROPIC_API_KEY: "key", REMOTE_KEY: "key" }, adapterId),
-      runtimeProfile: { environment: { kind, apiKeyEnv: "REMOTE_KEY", settings }, resultStore: { kind: "local" } },
-      suite: "evals/codex.suite.mjs",
-    }, remote);
-    return { ok: checked.ok, image: checked.checks.filter(value => value.code.startsWith("runtime.image")) };
-  };
-
-  let checked = await check("e2b", { workloadTemplate: "hurdle-claude-code:v1" }, "codex");
-  assert.equal(checked.ok, false);
-  assert.equal(checked.image[0].code, "runtime.image-agent-missing");
-  assert.match(checked.image[0].message, /E2B template hurdle-claude-code:v1 has no Codex CLI/);
-  assert.match(checked.image[0].message, /setup evals\/codex\.suite\.mjs --sandbox e2b --yes` to build hurdle-claude-code-codex:v2/);
-
-  checked = await check("e2b", { workloadTemplate: "hurdle-codex:v1" }, "codex");
-  assert.equal(checked.ok, true, "an older CLI still runs");
-  assert.equal(checked.image[0].status, "warning");
-  assert.equal(checked.image[0].code, "runtime.image-outdated");
-  assert.match(checked.image[0].message, /to build hurdle-codex:v2/);
-
-  checked = await check("together", { snapshotAlias: "hurdle-claude-code-codex-network@v1" }, "claude-code");
-  assert.equal(checked.image[0].code, "runtime.image-outdated");
-  assert.match(checked.image[0].message, /Together snapshot .* --sandbox together --yes` to build hurdle-claude-code-codex-network@v2/);
-
-  // Without an alias, Together's own Hurdle image is Together's to keep current.
-  for (const [kind, settings, adapterId] of [
-    ["e2b", { workloadTemplate: "hurdle-codex:v2" }, "codex"],
-    ["e2b", { workloadTemplate: "hurdle-claude-code:v1" }, "claude-code"],
-    ["e2b", { workloadTemplate: "my-codex-template:v1" }, "codex"],
-    ["e2b", {}, "codex"],
-    ["together", undefined, "claude-code"],
-    ["together", undefined, "codex"],
-    ["together", { snapshotAlias: "my-snapshot@v1" }, "codex"],
-  ]) {
-    checked = await check(kind, settings, adapterId);
-    assert.deepEqual(checked, { ok: true, image: [] }, JSON.stringify(settings));
   }
 });
 
@@ -371,7 +322,6 @@ test("Together readiness requires the controller-host Guardian except during set
   const dependencies = (installed) => ({
     probeCli() { assert.fail("Remote readiness does not probe a local CLI"); },
     fetch: async () => success(),
-    checkTogetherSandbox: async () => ({ status: "pass", message: "account accessible" }),
     findHostGuardian: () => installed ? {} : null,
   });
   const check = (installed, allowHostGuardianSetup = false) => checkAgentReadiness({
@@ -383,7 +333,7 @@ test("Together readiness requires the controller-host Guardian except during set
   assert.equal(missing.ok, false);
   const guardian = missing.checks.find(({ code }) => code === "runtime.host-guardian");
   assert.equal(guardian.status, "fail");
-  assert.match(guardian.message, /--sandbox together/);
+  assert.match(guardian.message, /Run .*setup/);
   assert.equal((await check(true)).checks.find(({ code }) => code === "runtime.host-guardian").status, "pass");
   assert.equal((await check(false, true)).checks.some(({ code }) => code === "runtime.host-guardian"), false);
 });

@@ -1,6 +1,4 @@
-import { togetherApiUrl } from "./together-api-url.mjs";
 import { normalizePostgresConnectionString, postgresConnectionFailure } from "./postgres-connection-string.mjs";
-import { backendDependencyInstallCommand } from "./backend-dependencies.mjs";
 import { hurdleEnvironmentValue, RESULT_STORE_DATABASE_URL_ENV } from "./hurdle-environment.mjs";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
@@ -117,38 +115,6 @@ export async function checkTogetherCredential(apiKey, { fetch = globalThis.fetch
   }
 }
 
-const E2B_KEYS_URL = "https://console.e2b.dev/?tab=keys";
-
-// Only 401/403 prove a bad key; rate limits, timeouts and outages are retried
-// once and then reported as unavailability rather than a rejected credential.
-function e2bRejected(error) {
-  return error?.name === "AuthenticationError" || /^403\b/.test(String(error?.message ?? ""));
-}
-
-export async function checkE2bCredential(apiKey, { loadE2b, retryDelayMs = 1_000, name = "E2B_API_KEY" } = {}) {
-  if (!apiKey?.trim()) return result("E2B", "skip", `${name} is not set`);
-  let Sandbox;
-  try {
-    ({ Sandbox } = await (loadE2b ?? (() => import("e2b")))());
-  } catch (error) {
-    if (error?.code === "ERR_MODULE_NOT_FOUND") {
-      return result("E2B", "fail", `backend dependencies are not installed; run ${backendDependencyInstallCommand()}`);
-    }
-    return result("E2B", "fail", "the E2B SDK could not be loaded");
-  }
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      const paginator = Sandbox.list({ apiKey, limit: 1, requestTimeoutMs: REQUEST_TIMEOUT_MS });
-      await paginator.nextItems();
-      return result("E2B", "pass", "account access succeeded; no sandbox was created");
-    } catch (error) {
-      if (e2bRejected(error)) return result("E2B", "fail", `${name} was rejected (bad key or no account access); set a valid ${name} in .env.local from ${E2B_KEYS_URL}`);
-      if (attempt >= 2) return result("E2B", "fail", "E2B could not be reached or returned an error; check your network and retry");
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
-  }
-}
-
 export async function checkPostgresCredential(connectionString, { createPool } = {}) {
   if (!connectionString?.trim()) {
     return result("Postgres", "skip", `${RESULT_STORE_DATABASE_URL_ENV} is not set`);
@@ -186,23 +152,6 @@ export async function runCredentialPreflight(environment, dependencies = {}) {
   return Promise.all([
     checkAnthropicCredential(environment.ANTHROPIC_API_KEY, dependencies),
     checkTogetherCredential(environment.TOGETHER_API_KEY, dependencies),
-    checkE2bCredential(environment.E2B_API_KEY, dependencies),
     checkPostgresCredential(hurdleEnvironmentValue(environment, RESULT_STORE_DATABASE_URL_ENV), dependencies),
   ]);
-}
-
-// Read-only access check; never allocate a VM or retain provider response data.
-// A Runtime without a snapshot alias never touches the sandbox API: Together's
-// Hurdle API refuses a bad key when the run connects.
-export async function checkTogetherSandboxCredential(apiKey, { loadSdk = () => import('together-sandbox'), snapshotAlias = null } = {}) {
-  if (typeof apiKey !== 'string' || !apiKey.trim()) return { status: 'fail', message: 'sandbox API key is missing' };
-  if (!snapshotAlias) return { status: 'skip', message: 'key is checked when the run connects' };
-  try {
-    const { TogetherSandbox } = await loadSdk();
-    const sdk = new TogetherSandbox({ apiKey, baseUrl: togetherApiUrl(), retry: { maxAttempts: 1 } });
-    await sdk.snapshots.list({ limit: 1 });
-    return { status: 'pass', message: 'sandbox API access verified' };
-  } catch (error) {
-    return { status: 'fail', message: error.status === 401 || error.status === 403 ? 'sandbox access denied; check the key and organization enablement' : 'sandbox API access could not be verified' };
-  }
 }

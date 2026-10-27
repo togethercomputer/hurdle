@@ -6,9 +6,8 @@ export function togetherUsesLocalControlPlane(env = process.env) {
 }
 
 // Together's Hurdle API: one WebSocket per sandbox, booted from Together's own
-// Hurdle image and served from Together's CodeSandbox US region. The default for
-// a Together Runtime without a snapshot alias; HURDLE_TOGETHER_RUN_URL points it
-// at another control plane.
+// Hurdle image and served from Together's CodeSandbox US region.
+// HURDLE_TOGETHER_RUN_URL points it at another control plane.
 export const DEFAULT_TOGETHER_RUN_URL = "wss://hurdle.us.codesandbox.io/v1/compute/experimental/run";
 
 export function togetherRunUrl(env = process.env) {
@@ -17,15 +16,4 @@ export function togetherRunUrl(env = process.env) {
     throw new Error("HURDLE_TOGETHER_RUN_URL must be a ws(s) URL");
   }
   return url.toString();
-}
-
-export function togetherApiUrl(env = process.env) {
-  const configured = env.HURDLE_TOGETHER_API_URL?.trim();
-  if (!configured) return "https://api.bartender.codesandbox.io";
-  const url = new URL(configured);
-  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password
-    || (url.pathname !== "/" && url.pathname !== "") || url.search || url.hash) {
-    throw new Error("HURDLE_TOGETHER_API_URL must be an http(s) origin");
-  }
-  return url.origin;
 }

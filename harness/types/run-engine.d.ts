@@ -138,7 +138,7 @@ export type ExecutionProgressEvent =
   | Readonly<{
       kind: "environment-status";
       executionId: string;
-      environmentId: "e2b" | "together";
+      environmentId: "together";
       status: "starting-guardian" | "guardian-started" | "starting-sandbox"
         | "sandbox-started" | "preparing-environment" | "preparing-workspace"
         | "agent-running" | "collecting-results" | "stopping-sandboxes";
@@ -146,9 +146,9 @@ export type ExecutionProgressEvent =
   | Readonly<{
       kind: "environment-resource-allocated";
       executionId: string;
-      environmentId: "e2b" | "together";
+      environmentId: "together";
       resource: Readonly<{
-        provider: "e2b" | "together";
+        provider: "together";
         role: "guardian" | "agent";
         id: string;
       }>;

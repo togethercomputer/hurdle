@@ -2,11 +2,9 @@ import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkE2bCredential, checkPostgresCredential, checkTogetherSandboxCredential } from "./credential-preflight.mjs";
+import { checkPostgresCredential } from "./credential-preflight.mjs";
 import { findHostGuardianRuntime } from "./host-guardian-runtime.mjs";
 import { isClaudeCodeOauthToken } from "./judges/anthropic-json.mjs";
-import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
-import { managedImageAgents, managedImageName } from "./managed-images.mjs";
 import { listLocalCodexModels } from "./model-discovery.mjs";
 import { cliExecutable, suiteCommand } from "./terminal-output.mjs";
 
@@ -14,7 +12,6 @@ const nonblank = value => typeof value === "string" && value.trim().length > 0;
 const result = (status, code, message) => ({ status, code, message });
 const CLAUDE_RECOVERY = "Set a valid ANTHROPIC_API_KEY in .env.local, or unset it and set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`. Hurdle uses isolated credentials rather than your interactive login.";
 const CODEX_RECOVERY = "Set CODEX_API_KEY or OPENAI_API_KEY in .env.local. Hurdle uses OpenAI API keys only, not ChatGPT access tokens or your interactive Codex login.";
-const AGENT_LABELS = { "claude-code": "Claude Code", codex: "Codex" };
 
 // Probe only the executable, without credentials, project settings, or an Agent
 // prompt. Bound both process lifetime and captured output; never display it.
@@ -34,28 +31,6 @@ export async function probeAgentCli(command, env) {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-}
-
-// A Hurdle-built image names the Agent CLIs it holds; caller-owned images are
-// left to the caller.
-function checkManagedImage(environment, adapterIds, setup) {
-  const together = environment.kind === "together";
-  const provider = together ? "together" : "e2b";
-  const image = together ? normalizeTogetherSettings(environment.settings).snapshotAlias : environment.settings?.workloadTemplate;
-  // Together's own Hurdle image, used without an alias, is Together's to keep current.
-  const managed = image ? managedImageAgents(image, provider) : null;
-  if (!managed) return null;
-  const label = `${together ? "Together snapshot" : "E2B template"} ${image}`;
-  const agents = [...new Set([...managed.agents, ...adapterIds])];
-  const rebuild = `Run \`${setup} --sandbox ${provider} --yes\` to build ${managedImageName(agents, provider, { network: managed.network })}.`;
-  const missing = adapterIds.filter(id => !managed.agents.includes(id));
-  if (missing.length) {
-    return result("fail", "runtime.image-agent-missing", `${label} has no ${missing.map(id => AGENT_LABELS[id]).join(" or ")} CLI. ${rebuild}`);
-  }
-  if (!managed.current) {
-    return result("warning", "runtime.image-outdated", `${label} has older Agent CLIs than this version of Hurdle pins. ${rebuild}`);
-  }
-  return null;
 }
 
 async function checkApiKey(provider, name, key, fetch) {
@@ -99,8 +74,7 @@ export async function checkAgentReadiness({
   suite = "evals/example.suite.mjs", cwd,
 }, {
   fetch = globalThis.fetch, probeCli = probeAgentCli,
-  checkE2b = checkE2bCredential, checkPostgres = checkPostgresCredential,
-  checkTogetherSandbox = checkTogetherSandboxCredential,
+  checkPostgres = checkPostgresCredential,
   findHostGuardian = findHostGuardianRuntime,
   listCodexModels = listLocalCodexModels,
 } = {}) {
@@ -136,7 +110,7 @@ export async function checkAgentReadiness({
       }
     } else {
       // A host CLI probe is inapplicable; run observes startup inside the VM.
-      checks.push(result("skip", "agent.remote-unverified", `${label} runs inside the ${runtimeProfile.environment.kind === "together" ? "Together" : "E2B"} sandbox; no local CLI installation needed.`));
+      checks.push(result("skip", "agent.remote-unverified", `${label} runs inside the Together sandbox; no local CLI installation needed.`));
     }
     if (!claude && nonblank(runtimeEnv.CODEX_ACCESS_TOKEN)) {
       checks.push(result("warning", "auth.access-token-unsupported", "Codex · CODEX_ACCESS_TOKEN is ignored: Hurdle runs Codex with an OpenAI API key only."));
@@ -172,25 +146,17 @@ export async function checkAgentReadiness({
       ? `Required task credential ${name} is configured (provider access is not checked).`
       : `Required task credential ${name} is missing. Set it in .env.local before running.`));
   }
-  if (runtimeProfile.environment.kind !== "local") {
-    const adapterIds = [...new Set(agentSelections.map(value => value.adapterId))];
-    const checked = checkManagedImage(runtimeProfile.environment, adapterIds, suiteCommand("setup", suite, { cwd }));
-    if (checked) checks.push(checked);
-  }
-  if (runtimeProfile.environment.kind === "e2b") {
-    const checked = await checkE2b(runtimeEnv[runtimeProfile.environment.apiKeyEnv], { name: runtimeProfile.environment.apiKeyEnv });
-    checks.push(result(checked.status === "pass" ? "pass" : "fail", "runtime.e2b", `E2B: ${checked.message}.`));
-  }
   if (runtimeProfile.environment.kind === "together") {
-    const checked = await checkTogetherSandbox(runtimeEnv[runtimeProfile.environment.apiKeyEnv], {
-      snapshotAlias: normalizeTogetherSettings(runtimeProfile.environment.settings).snapshotAlias,
-    });
-    checks.push(result(["pass", "skip"].includes(checked.status) ? checked.status : "fail", "runtime.together", `Together sandbox: ${checked.message}.`));
+    // Never allocate a sandbox here: Together's Hurdle API refuses a bad key
+    // when the run connects.
+    checks.push(nonblank(runtimeEnv[runtimeProfile.environment.apiKeyEnv])
+      ? result("skip", "runtime.together", "Together sandbox: key is checked when the run connects.")
+      : result("fail", "runtime.together", "Together sandbox: sandbox API key is missing."));
     // Setup installs the Guardian after readiness passes.
     if (!allowHostGuardianSetup) {
       checks.push(findHostGuardian()
         ? result("pass", "runtime.host-guardian", "Egress Guardian installed on this machine.")
-        : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })} --sandbox together --yes.`));
+        : result("fail", "runtime.host-guardian", `Egress Guardian is not installed on this machine. Run ${suiteCommand("setup", suite, { cwd })}.`));
     }
   }
   if (runtimeProfile.resultStore.kind === "postgres") {

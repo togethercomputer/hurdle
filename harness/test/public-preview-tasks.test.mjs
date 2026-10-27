@@ -131,7 +131,6 @@ test("shipped Together Suites and task filters cannot enable catalogue-only Task
       createRunEngine: unexpectedEffect,
       createAgentAdapter: unexpectedEffect,
       createLocalExecutionEnvironment: unexpectedEffect,
-      createE2BExecutionEnvironment: unexpectedEffect,
       createAnthropicJsonJudge: unexpectedEffect,
       openLocalResultStore: unexpectedEffect,
       openPostgresResultStore: unexpectedEffect,

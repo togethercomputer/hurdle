@@ -224,46 +224,6 @@ function settings(value, sourcePath, pointer) {
   return structuredClone(value);
 }
 
-function e2bSettings(value, sourcePath) {
-  const normalized = settings(value, sourcePath, "/environment/settings");
-  const allowed = new Set([
-    "captureProfile",
-    "workloadTemplate",
-    "guardianTemplate",
-    "region",
-    "cpuCount",
-    "memoryMiB",
-    "maxLifetimeMs",
-  ]);
-  for (const key of Object.keys(normalized)) {
-    if (!allowed.has(key)) schemaError(`E2B settings do not allow '${key}'.`, sourcePath, "/environment/settings");
-  }
-  for (const key of ["captureProfile", "workloadTemplate", "guardianTemplate"]) {
-    if (normalized[key] !== undefined) {
-      nonblankString(normalized[key], `E2B ${key}`, sourcePath, `/environment/settings/${key}`);
-    }
-  }
-  if (
-    normalized.captureProfile !== undefined
-    && normalized.captureProfile !== "external-guardian-http-metadata-v1"
-  ) {
-    schemaError("E2B captureProfile is not supported.", sourcePath, "/environment/settings/captureProfile");
-  }
-  if (normalized.region !== undefined && normalized.region !== null) {
-    schemaError("E2B region selection is not supported.", sourcePath, "/environment/settings/region");
-  }
-  for (const [key, minimum, maximum] of [
-    ["cpuCount", 1, 64],
-    ["memoryMiB", 512, 262_144],
-    ["maxLifetimeMs", 1_000, 86_400_000],
-  ]) {
-    if (normalized[key] !== undefined) {
-      positiveInteger(normalized[key], `E2B ${key}`, minimum, maximum, sourcePath, `/environment/settings/${key}`);
-    }
-  }
-  return normalized;
-}
-
 function positiveInteger(value, label, minimum, maximum, sourcePath, pointer) {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     schemaError(`${label} must be an integer from ${minimum} to ${maximum}.`, sourcePath, pointer);
@@ -285,14 +245,6 @@ function normalizedEnvironment(value, sourcePath) {
     }
     return { kind: "local", settings: normalizedSettings };
   }
-  if (value.kind === "e2b") {
-    if (!Object.hasOwn(value, "apiKeyEnv")) schemaError("E2B Environment requires 'apiKeyEnv'.", sourcePath, "/environment/apiKeyEnv");
-    return {
-      kind: "e2b",
-      apiKeyEnv: environmentName(value.apiKeyEnv, "E2B apiKeyEnv", sourcePath, "/environment/apiKeyEnv"),
-      settings: e2bSettings(value.settings ?? {}, sourcePath),
-    };
-  }
   if (value.kind === "together") {
     if (!Object.hasOwn(value, "apiKeyEnv")) schemaError("Together Environment requires 'apiKeyEnv'.", sourcePath, "/environment/apiKeyEnv");
     const input = settings(value.settings ?? {}, sourcePath, "/environment/settings");
@@ -300,7 +252,7 @@ function normalizedEnvironment(value, sourcePath) {
     catch (error) { schemaError(error.message, sourcePath, "/environment/settings"); }
     return { kind: "together", apiKeyEnv: environmentName(value.apiKeyEnv, "Together apiKeyEnv", sourcePath, "/environment/apiKeyEnv"), settings: input };
   }
-  schemaError("Runtime Profile Environment kind must be 'local', 'e2b', or 'together'.", sourcePath, "/environment/kind");
+  schemaError("Runtime Profile Environment kind must be 'local' or 'together'.", sourcePath, "/environment/kind");
 }
 
 function normalizedResultStore(value, sourcePath) {
@@ -407,9 +359,6 @@ function resolveNamedSecret(name, env) {
 
 export function resolveRuntimeSecrets(profile, env = process.env, needs = {}) {
   const resolved = {};
-  if (profile?.environment?.kind === "e2b" && needs.environment !== false) {
-    resolved.e2bApiKey = resolveNamedSecret(profile.environment.apiKeyEnv, env);
-  }
   if (profile?.environment?.kind === "together" && needs.environment !== false) {
     resolved.togetherApiKey = resolveNamedSecret(profile.environment.apiKeyEnv, env);
   }

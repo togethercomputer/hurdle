@@ -11,23 +11,21 @@ import {
   reportExecutionProgress,
 } from "../execution-progress.mjs";
 import { deepFreeze, RunSelectionInputError } from "../run-model.mjs";
-import { createTogetherProvider } from "./together-provider.mjs";
 import { createTogetherSocketProvider } from "./together-socket-provider.mjs";
 import { randomBytes } from "node:crypto";
-import { validateSandboxEnvelope } from "./e2b.mjs";
 import { sealCredentialBindings } from "../sealed-credential-delivery.mjs";
 import {
   agentCredentialStandIn,
+  assertCredentialRoutes,
   prepareAgentCredentials,
   withAgentCredentialStandIns,
 } from "../agent-credential-routes.mjs";
+import { assertExchangeFactCapturePolicy } from "./guardian.mjs";
 import { createTogetherGuardianController } from "./together-guardian.mjs";
 
-// Without a snapshot alias a run uses Together's Hurdle API, which boots
-// Together's own Hurdle image over one socket. An alias names a caller-owned
-// snapshot on the sandbox API instead; cpuCount and memoryMiB apply only there.
+// A run uses Together's Hurdle API, which boots Together's own Hurdle image
+// over one socket.
 const DEFAULT_SETTINGS = Object.freeze({
-  snapshotAlias: null,
   cpuCount: 1,
   memoryMiB: 2048,
   maxLifetimeMs: 3_600_000,
@@ -54,16 +52,6 @@ export function normalizeTogetherSettings(
         `unknown Together environment setting '${key}'`,
       );
   const selected = { ...defaults, ...structuredClone(settings) };
-  if (
-    selected.snapshotAlias !== null &&
-    (typeof selected.snapshotAlias !== "string" ||
-      !selected.snapshotAlias.trim() ||
-      selected.snapshotAlias.length > 256 ||
-      /^REPLACE_WITH_/i.test(selected.snapshotAlias))
-  )
-    throw new RunSelectionInputError(
-      "Together snapshotAlias must name a caller-owned snapshot, or be omitted for Together's Hurdle image",
-    );
   for (const [key, minimum, maximum] of [
     ["cpuCount", 1, 16],
     ["memoryMiB", 1024, 131072],
@@ -123,13 +111,106 @@ function noEgress(reason = "unsupported-platform") {
   };
 }
 
+export function validateSandboxEnvelope(envelope, providerName = "Together") {
+  if (!envelope || typeof envelope !== "object") {
+    throw new TypeError(`${providerName} execution requires an execution envelope`);
+  }
+  if (!Array.isArray(envelope.credentialBindings)) {
+    throw new TypeError(`${providerName} credential bindings must be an array`);
+  }
+  if (typeof envelope.workspaceArtifactMetadata !== "boolean") {
+    throw new TypeError(`${providerName} workspace metadata selection must be boolean`);
+  }
+  assertCredentialRoutes(envelope.launchPlan?.credentialRoutes, envelope.launchPlan?.env);
+  const routes = envelope.capture?.routes ?? [];
+  const blockedRequests = envelope.capture?.blockedRequests ?? [];
+  assertExchangeFactCapturePolicy(envelope.capture?.exchangeFacts);
+  const requestedProtocols = envelope.capture?.mode === "none"
+    ? []
+    : (envelope.capture?.protocols ?? ["http", "https"]);
+  if (
+    !Array.isArray(routes)
+    || routes.some((route) => (
+      typeof route?.host !== "string"
+      || !route.host
+      || !Array.isArray(route.selectedFields)
+      || route.selectedFields.length > 32
+      || route.selectedFields.some((field) => (
+        typeof field !== "string"
+        || !/^[a-z][a-z0-9-]{0,63}$/.test(field)
+      ))
+    ))
+  ) {
+    throw new TypeError(`${providerName} selected-field capture is not supported by this profile`);
+  }
+  if (
+    !Array.isArray(blockedRequests)
+    || blockedRequests.length > 128
+    || blockedRequests.some((rule) => (
+      !rule
+      || typeof rule !== "object"
+      || Array.isArray(rule)
+      || Object.keys(rule).length !== 3
+      || Object.keys(rule).some((key) => !["id", "method", "path"].includes(key))
+      || typeof rule.id !== "string"
+      || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(rule.id)
+      || typeof rule.method !== "string"
+      || !/^[A-Z]{1,16}$/.test(rule.method)
+      || typeof rule.path !== "string"
+      || !rule.path.startsWith("/")
+      || rule.path.includes("?")
+      || rule.path.includes("#")
+      || Buffer.byteLength(rule.path) > 4_096
+    ))
+    || new Set(blockedRequests.map(({ id }) => id)).size !== blockedRequests.length
+    || new Set(blockedRequests.map(({ method, path }) => `${method}\n${path}`)).size
+      !== blockedRequests.length
+  ) {
+    throw new TypeError(`${providerName} request blocking is not supported by this profile`);
+  }
+  const captureHosts = new Set(routes.map(({ host }) => host));
+  for (const binding of envelope.credentialBindings) {
+    const delivery = binding?.delivery;
+    if (delivery?.kind === "environment") continue;
+    if (
+      delivery?.kind !== "captured-http-header"
+      || !Array.isArray(delivery.hosts)
+      || delivery.hosts.length === 0
+      || delivery.hosts.some((host) => !captureHosts.has(host))
+      || !Array.isArray(delivery.headerNames)
+      || delivery.headerNames.length === 0
+    ) {
+      throw new TypeError(`${providerName} credential delivery is not supported by this capture profile`);
+    }
+  }
+  if (
+    !["none", "http-egress-metadata-v1", "network-egress-metadata-v1"].includes(
+      envelope.capture?.mode,
+    )
+    || !Array.isArray(requestedProtocols)
+    || requestedProtocols.some((protocol) => (
+      !["http", "https", "wss"].includes(protocol)
+    ))
+    || (
+      envelope.capture?.mode === "none"
+      && (
+        blockedRequests.length > 0
+        || envelope.credentialBindings.some(({ delivery }) => (
+          delivery.kind === "captured-http-header"
+        ))
+      )
+    )
+  ) {
+    throw new TypeError(`${providerName} capture request is not supported by this capture profile`);
+  }
+}
+
 function validProvider(provider) {
   return ["acquire", "stage", "run", "collectArtifacts", "dispose", "isDisposed"]
     .every((method) => typeof provider?.[method] === "function");
 }
 
-// `provider` serves every run when given. Otherwise each run's settings choose:
-// a snapshot alias selects the sandbox API, none selects the Hurdle socket.
+// `provider` serves every run when given; otherwise the Hurdle socket does.
 export function createTogetherExecutionEnvironment({
   apiKey,
   provider: fixedProvider = null,
@@ -147,16 +228,10 @@ export function createTogetherExecutionEnvironment({
     throw new TypeError("Together Execution Environment requires a Guardian controller");
   if (fixedProvider !== null && !validProvider(fixedProvider))
     throw new TypeError("Together Execution Environment requires a provider");
-  const providers = {};
-  const providerFor = (settings) => {
-    if (fixedProvider) return fixedProvider;
-    const kind = settings.snapshotAlias ? "sandboxApi" : "socket";
-    providers[kind] ??= kind === "socket" ? createTogetherSocketProvider() : createTogetherProvider();
-    return providers[kind];
-  };
+  const provider = fixedProvider ?? createTogetherSocketProvider();
   const normalizedDefaults = normalizeTogetherSettings(defaults);
   const progress = normalizeExecutionProgressObserver(progressObserver);
-  // Both built-in providers report workspace metadata.
+  // The socket provider reports workspace metadata.
   const metadataSupported =
     !fixedProvider || typeof fixedProvider.collectWorkspaceArtifactMetadata === "function";
   return Object.freeze({
@@ -190,10 +265,9 @@ export function createTogetherExecutionEnvironment({
           "Together workspace artifact metadata is unsupported by this provider",
         );
       const settings = normalizeTogetherSettings(envelope.settings, normalizedDefaults);
-      const provider = providerFor(settings);
-      const credentialBindings = provider.sealedOnly
-        ? sealCredentialBindings(envelope, { sandboxName: "Together" })
-        : envelope.credentialBindings;
+      // The socket carries no credential into the sandbox; the Guardian
+      // delivers every one on the Task's API hosts.
+      const credentialBindings = sealCredentialBindings(envelope, { sandboxName: "Together" });
       return withExecutionCredentialValues(
         envelope,
         async (credentialValues) => {
@@ -211,7 +285,7 @@ export function createTogetherExecutionEnvironment({
           ]));
           // The Agent Adapter declares where its own model credential may go;
           // the controller-host Guardian keeps the real value and the workload
-          // receives only a stand-in, as on E2B.
+          // receives only a stand-in.
           const agentSubstitutions = prepareAgentCredentials(envelope.launchPlan, entropy);
           let resource;
           let process = null;
@@ -259,7 +333,7 @@ export function createTogetherExecutionEnvironment({
             resource = await provider.acquire({
               ...settings,
               apiKey,
-              // Bartender's Hurdle API hands the Guardian CA to the sandbox.
+              // Together's Hurdle API hands the Guardian CA to the sandbox.
               caCertificate: guardianSession.caCertificate,
               signal: envelope.signal,
             });

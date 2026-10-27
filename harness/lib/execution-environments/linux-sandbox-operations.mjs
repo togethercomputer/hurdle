@@ -601,7 +601,7 @@ PY`, { timeoutMs: 10_000, user: "root" });
 }
 
 // Shared controller-owned staging, process census, and artifact sealing.
-// These paths retain the original E2B layout for template compatibility.
+// These paths retain the original sandbox layout for image compatibility.
 export function createLinuxSandboxOperations() {
   return Object.freeze({
     async stage(workload, input) {

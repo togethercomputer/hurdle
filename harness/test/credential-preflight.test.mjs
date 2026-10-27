@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   checkAnthropicCredential,
-  checkE2bCredential,
   checkPostgresCredential,
   checkTogetherCredential,
   runCredentialPreflight,
@@ -94,62 +93,6 @@ test("Together preflight names a retired model instead of a bare HTTP 400", asyn
   });
 });
 
-test("E2B preflight lists resources without allocating a sandbox", async () => {
-  const calls = [];
-  const result = await checkE2bCredential("secret-e2b", {
-    async loadE2b() {
-      return {
-        Sandbox: {
-          list(options) {
-            calls.push(options);
-            return { async nextItems() { return []; } };
-          },
-        },
-      };
-    },
-  });
-  assert.equal(result.status, "pass");
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].apiKey, "secret-e2b");
-  assert.doesNotMatch(JSON.stringify(result), /secret-e2b/);
-});
-
-test("E2B preflight retries a transient failure and blames the key only when rejected", async () => {
-  const error = (name, message) => Object.assign(new Error(message), { name });
-  const sdk = (failures) => {
-    let calls = 0;
-    return {
-      calls: () => calls,
-      async loadE2b() {
-        return { Sandbox: { list() {
-          return { async nextItems() { calls += 1; const failure = failures.shift(); if (failure) throw failure; return []; } };
-        } } };
-      },
-    };
-  };
-
-  const recovered = sdk([error("SandboxError", "502: bad gateway")]);
-  assert.equal((await checkE2bCredential("secret-e2b", { ...recovered, retryDelayMs: 0 })).status, "pass");
-  assert.equal(recovered.calls(), 2);
-
-  const unavailable = sdk([error("RateLimitError", "Rate limit exceeded"), error("TimeoutError", "timed out")]);
-  const outage = await checkE2bCredential("secret-e2b", { ...unavailable, retryDelayMs: 0 });
-  assert.equal(outage.status, "fail");
-  assert.match(outage.message, /could not be reached/);
-  assert.doesNotMatch(outage.message, /rejected/);
-
-  for (const failure of [error("AuthenticationError", "401: Invalid API key"), error("SandboxError", "403: Forbidden")]) {
-    const rejected = sdk([failure]);
-    const result = await checkE2bCredential("secret-e2b", { ...rejected, retryDelayMs: 0 });
-    assert.equal(result.message, "E2B_API_KEY was rejected (bad key or no account access); set a valid E2B_API_KEY in .env.local from https://console.e2b.dev/?tab=keys");
-    assert.doesNotMatch(result.message, /secret-e2b/);
-    assert.equal(rejected.calls(), 1);
-  }
-  // A Runtime can read the key from another variable; name that one.
-  const renamed = await checkE2bCredential("secret-e2b", { ...sdk([error("AuthenticationError", "401")]), retryDelayMs: 0, name: "TEAM_E2B_KEY" });
-  assert.match(renamed.message, /^TEAM_E2B_KEY was rejected .* set a valid TEAM_E2B_KEY in \.env\.local/);
-});
-
 test("Postgres preflight is read-only and reports migration state", async () => {
   const queries = [];
   let selectedConnectionString;
@@ -237,10 +180,9 @@ test("every Postgres connection path preserves pg 8 strict TLS semantics", () =>
 test("unconfigured services are skipped and the aggregate remains secret-safe", async () => {
   const results = await runCredentialPreflight({}, {
     fetch: async () => { throw new Error("must not be called"); },
-    loadE2b: async () => { throw new Error("must not be called"); },
     createPool: () => { throw new Error("must not be called"); },
   });
-  assert.equal(results.length, 4);
+  assert.equal(results.length, 3);
   assert.ok(results.every(({ status }) => status === "skip"));
 });
 

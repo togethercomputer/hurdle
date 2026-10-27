@@ -6,7 +6,7 @@ import { ARTIFACT_ROOT } from "../lib/execution-environments/linux-sandbox-opera
 import { createSandboxServer, TASK_ROOT } from "../lib/execution-environments/sandbox-server.mjs";
 import { createSandboxTask } from "../lib/execution-environments/sandbox-task.mjs";
 
-// Started by Bartender inside every Hurdle sandbox (BARTENDER_HURDLE_SANDBOX_COMMAND).
+// Started by Together's Hurdle API inside every Hurdle sandbox.
 // The sandbox lives as long as the one connection it serves.
 const caPath = `${TASK_ROOT}/guardian-ca.pem`;
 const task = createSandboxTask({

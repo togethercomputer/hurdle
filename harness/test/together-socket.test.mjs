@@ -84,15 +84,15 @@ test("one connection per sandbox, carrying the Guardian CA", async (t) => {
   await assert.rejects(acquire(h.provider), (error) => error.status === 409);
 });
 
-test("Bartender's refusal surfaces its status and code", async (t) => {
-  const bartender = http.createServer((_request, response) => {
+test("Together's Hurdle API refusal surfaces its status and code", async (t) => {
+  const hurdleApi = http.createServer((_request, response) => {
     response.writeHead(502, { "content-type": "application/json" });
     response.end(JSON.stringify({ code: "sandbox_connection_failed", message: "x" }));
   });
-  await new Promise((ready) => bartender.listen(0, "127.0.0.1", ready));
-  t.after(() => bartender.close());
+  await new Promise((ready) => hurdleApi.listen(0, "127.0.0.1", ready));
+  t.after(() => hurdleApi.close());
   const provider = createTogetherSocketProvider({
-    runUrl: () => `ws://127.0.0.1:${bartender.address().port}/v1/compute/experimental/run`,
+    runUrl: () => `ws://127.0.0.1:${hurdleApi.address().port}/v1/compute/experimental/run`,
   });
   await assert.rejects(acquire(provider), (error) => (
     error.status === 502 && error.code === "sandbox_connection_failed"
@@ -103,19 +103,19 @@ test("a connection Together never answers fails instead of hanging", async (t) =
   // Accepts the upgrade request and never replies, as a stalled boot would.
   const held = new Set();
   const ended = [];
-  const bartender = http.createServer();
-  bartender.on("upgrade", (_request, socket) => {
+  const hurdleApi = http.createServer();
+  hurdleApi.on("upgrade", (_request, socket) => {
     held.add(socket);
     socket.on("error", () => {});
     socket.once("end", () => ended.push(socket));
   });
-  await new Promise((ready) => bartender.listen(0, "127.0.0.1", ready));
+  await new Promise((ready) => hurdleApi.listen(0, "127.0.0.1", ready));
   t.after(() => {
     for (const socket of held) socket.destroy();
-    bartender.close();
+    hurdleApi.close();
   });
   const provider = createTogetherSocketProvider({
-    runUrl: () => `ws://127.0.0.1:${bartender.address().port}/v1/compute/experimental/run`,
+    runUrl: () => `ws://127.0.0.1:${hurdleApi.address().port}/v1/compute/experimental/run`,
     connectTimeoutMs: 200,
   });
   const started = Date.now();
@@ -129,7 +129,7 @@ test("a connection Together never answers fails instead of hanging", async (t) =
 
   // Cancelling while connecting still wins over the timeout.
   const cancelling = createTogetherSocketProvider({
-    runUrl: () => `ws://127.0.0.1:${bartender.address().port}/v1/compute/experimental/run`,
+    runUrl: () => `ws://127.0.0.1:${hurdleApi.address().port}/v1/compute/experimental/run`,
     connectTimeoutMs: 60_000,
   });
   const controller = new AbortController();

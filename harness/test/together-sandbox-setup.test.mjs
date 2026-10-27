@@ -8,11 +8,11 @@ import test from "node:test";
 import { createFrameworkCli } from "../bin/hurdle.mjs";
 import { initializeSuite } from "../lib/starter-suite.mjs";
 import {
-  BARTENDER_CONTEXT_FILES,
-  TOGETHER_BARTENDER_SERVER_COMMAND,
-  togetherBartenderDockerfile,
+  IMAGE_CONTEXT_FILES,
+  TOGETHER_SERVER_COMMAND,
+  togetherImageDockerfile,
   togetherSandboxDockerfile,
-  writeTogetherBartenderContext,
+  writeTogetherImageContext,
 } from "../lib/together-sandbox-setup.mjs";
 
 async function fixture(t, example = "copy-message") {
@@ -22,7 +22,6 @@ async function fixture(t, example = "copy-message") {
     (await initializeSuite({ destination: join(root, "evals"), example })).ok,
     true,
   );
-  const calls = [];
   let text = "";
   const io = {
     cwd: root,
@@ -43,23 +42,12 @@ async function fixture(t, example = "copy-message") {
       ANTHROPIC_API_KEY: "test-agent-secret",
     },
     processTarget: new EventEmitter(),
-    assertRuntimeDependencies() {},
     checkAgentReadiness: async () => ({ ok: true, checks: [] }),
     ensureHostGuardianRuntime: async () => ({}),
-    loadTogetherSetupBackend: async () => ({
-      exists: async () => {
-        calls.push("exists");
-        return false;
-      },
-      build: async (...args) => {
-        calls.push(["build", ...args]);
-      },
-    }),
   };
   return {
     root,
     io,
-    calls,
     dependencies,
     output: () => text,
     runtimePath: join(root, ".hurdle/runtime/default.json"),
@@ -67,11 +55,7 @@ async function fixture(t, example = "copy-message") {
 }
 test("setup --sandbox together selects Together's Hurdle image without a build, and validate discovers its private Runtime", async (t) => {
   const f = await fixture(t);
-  const cli = createFrameworkCli({
-    ...f.dependencies,
-    loadSetupBackend() { assert.fail("Together setup must not use E2B"); },
-    loadTogetherSetupBackend() { assert.fail("no snapshot is needed"); },
-  });
+  const cli = createFrameworkCli(f.dependencies);
   assert.equal(
     await cli.main(["setup", "--sandbox", "together", "--yes", "--json"], f.io),
     0,
@@ -91,7 +75,7 @@ test("setup --sandbox together selects Together's Hurdle image without a build, 
   assert.doesNotMatch(f.output(), /test-sandbox-secret|test-agent-secret/);
   assert.equal(await cli.main(["validate"], f.io), 0, f.output());
 });
-test("Together setup preserves an existing store, Judge and limits while reusing snapshots", async (t) => {
+test("Together setup preserves an existing store, Judge and limits", async (t) => {
   const f = await fixture(t);
   const config = {
     schemaVersion: 1,
@@ -99,9 +83,6 @@ test("Together setup preserves an existing store, Judge and limits while reusing
       kind: "together",
       apiKeyEnv: "TOGETHER_API_KEY",
       settings: {
-        snapshotAlias: "existing@v1",
-        cpuCount: 2,
-        memoryMiB: 4096,
         maxLifetimeMs: 120000,
       },
     },
@@ -110,13 +91,7 @@ test("Together setup preserves an existing store, Judge and limits while reusing
   };
   await mkdir(join(f.root, ".hurdle/runtime"), { recursive: true });
   await writeFile(f.runtimePath, JSON.stringify(config));
-  const cli = createFrameworkCli({
-    ...f.dependencies,
-    loadTogetherSetupBackend: async () => ({
-      exists: async () => true,
-      build: () => assert.fail("must reuse snapshot"),
-    }),
-  });
+  const cli = createFrameworkCli(f.dependencies);
   assert.equal(
     await cli.main(["setup", "--sandbox", "together"], f.io),
     0,
@@ -128,62 +103,7 @@ test("Together setup preserves an existing store, Judge and limits while reusing
   assert.equal(saved.viewer.port, 3022);
   assert.match(f.output(), /✓ Setup complete · Together sandbox configured\./);
 });
-// A project that built a Hurdle snapshot before keeps using the sandbox API.
-async function savedSnapshot(f, snapshotAlias) {
-  await mkdir(join(f.root, ".hurdle/runtime"), { recursive: true });
-  await writeFile(f.runtimePath, JSON.stringify({
-    schemaVersion: 1,
-    environment: { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: { snapshotAlias, maxLifetimeMs: 300000 } },
-    resultStore: { kind: "local", root: "../together-results-v1" },
-  }));
-}
-
-test("Together setup adds a new Agent to a project's Hurdle snapshot instead of reusing one without its CLI", async (t) => {
-  const f = await fixture(t);
-  f.dependencies.env.OPENAI_API_KEY = "test-openai-secret";
-  const available = new Set(["hurdle-claude-code@v1"]);
-  const builds = [];
-  const cli = createFrameworkCli({
-    ...f.dependencies,
-    loadTogetherSetupBackend: async () => ({
-      exists: async (alias) => available.has(alias),
-      build: async (alias, ids) => {
-        builds.push([alias, ids]);
-        available.add(alias);
-      },
-    }),
-  });
-  const savedAlias = async () => JSON.parse(await readFile(f.runtimePath, "utf8")).environment.settings.snapshotAlias;
-  await savedSnapshot(f, "hurdle-claude-code@v1");
-  assert.equal(await cli.main(["setup", "--sandbox", "together", "--yes"], f.io), 0, f.output());
-  assert.equal(await savedAlias(), "hurdle-claude-code@v1");
-  assert.equal(builds.length, 0);
-
-  assert.equal((await initializeSuite({ destination: join(f.root, "codex"), agent: "codex" })).ok, true);
-  assert.equal(
-    await cli.main(["setup", "codex/example.suite.mjs", "--sandbox", "together", "--yes"], f.io),
-    0,
-    f.output(),
-  );
-  assert.equal(await savedAlias(), "hurdle-claude-code-codex@v2");
-  assert.deepEqual(builds.at(-1), ["hurdle-claude-code-codex@v2", ["claude-code", "codex"]]);
-
-  // A snapshot saved by an earlier Hurdle has an older Codex CLI.
-  const runtime = JSON.parse(await readFile(f.runtimePath, "utf8"));
-  runtime.environment.settings.snapshotAlias = "hurdle-claude-code-codex@v1";
-  await writeFile(f.runtimePath, JSON.stringify(runtime));
-  available.clear();
-  available.add("hurdle-claude-code-codex@v1");
-  assert.equal(
-    await cli.main(["setup", "codex/example.suite.mjs", "--sandbox", "together", "--yes"], f.io),
-    0,
-    f.output(),
-  );
-  assert.equal(await savedAlias(), "hurdle-claude-code-codex@v2");
-  assert.equal(builds.length, 2);
-});
-
-test("Together API setup configures a longer Guardian lifetime, and a project's snapshot gains network tools", async (t) => {
+test("Together API setup configures a longer Guardian lifetime", async (t) => {
   const f = await fixture(t, "together-api");
   const cli = createFrameworkCli(f.dependencies);
   assert.equal(
@@ -191,14 +111,9 @@ test("Together API setup configures a longer Guardian lifetime, and a project's 
     0,
     f.output(),
   );
-  assert.deepEqual(f.calls, []);
   const config = JSON.parse(await readFile(f.runtimePath, "utf8"));
   assert.equal(config.environment.settings.maxLifetimeMs, 600000);
   assert.match(f.output(), /All sandbox traffic routes through this machine/);
-
-  await savedSnapshot(f, "hurdle-claude-code@v1");
-  assert.equal(await cli.main(["setup", "--sandbox", "together", "--yes"], f.io), 0, f.output());
-  assert.equal(f.calls[1][1], "hurdle-claude-code-network@v1");
 });
 test("Together setup gives a later API Suite ten minutes but keeps a configured limit", async (t) => {
   const f = await fixture(t);
@@ -220,25 +135,6 @@ test("Together setup gives a later API Suite ten minutes but keeps a configured 
   assert.equal(await lifetime(), 420000);
 });
 
-test("Together setup declines unapproved builds and missing caller-selected snapshots", async (t) => {
-  const unapproved = await fixture(t);
-  await savedSnapshot(unapproved, "hurdle-claude-code@v1");
-  const before = await readFile(unapproved.runtimePath, "utf8");
-  assert.equal(await createFrameworkCli(unapproved.dependencies).main(["setup", "--sandbox", "together"], unapproved.io), 1);
-  assert.ok(!unapproved.calls.some((call) => Array.isArray(call)));
-  assert.equal(await readFile(unapproved.runtimePath, "utf8"), before);
-
-  const missing = await fixture(t);
-  assert.equal(
-    await createFrameworkCli(missing.dependencies).main(
-      ["setup", "--sandbox", "together", "--snapshot", "missing@v1", "--yes"],
-      missing.io,
-    ),
-    1,
-  );
-  assert.ok(!missing.calls.some((call) => Array.isArray(call)));
-  assert.equal(existsSync(missing.runtimePath), false);
-});
 test("Together Dockerfile includes pinned agents and Linux controller dependencies", () => {
   const text = togetherSandboxDockerfile([
     "claude-code",
@@ -253,18 +149,18 @@ test("Together Dockerfile includes pinned agents and Linux controller dependenci
   assert.throws(() => togetherSandboxDockerfile(["unknown-agent"]));
 });
 
-test("Bartender snapshot context bakes in the sandbox server and everything it loads", async (t) => {
-  const context = await mkdtemp(join(tmpdir(), "hurdle-bartender-context-test-"));
+test("the Together image context bakes in the sandbox server and everything it loads", async (t) => {
+  const context = await mkdtemp(join(tmpdir(), "hurdle-image-context-test-"));
   t.after(() => rm(context, { recursive: true, force: true }));
-  await writeTogetherBartenderContext(context, ["claude-code", "codex"]);
+  await writeTogetherImageContext(context, ["claude-code", "codex"]);
 
   const dockerfile = await readFile(join(context, "Dockerfile"), "utf8");
-  assert.equal(dockerfile, togetherBartenderDockerfile(["claude-code", "codex"]));
+  assert.equal(dockerfile, togetherImageDockerfile(["claude-code", "codex"]));
   assert.ok(dockerfile.startsWith(togetherSandboxDockerfile(["claude-code", "codex"]).trimEnd()));
   assert.match(dockerfile, /\nCOPY hurdle\/ \/opt\/hurdle\/\nRUN cd \/opt\/hurdle && npm ci /);
 
   const harness = join(import.meta.dirname, "..");
-  for (const file of BARTENDER_CONTEXT_FILES)
+  for (const file of IMAGE_CONTEXT_FILES)
     assert.equal(
       await readFile(join(context, "hurdle", "harness", file), "utf8"),
       await readFile(join(harness, file), "utf8"),
@@ -276,7 +172,7 @@ test("Bartender snapshot context bakes in the sandbox server and everything it l
   for (const module of ["sandbox-server", "sandbox-task", "together-workload-egress"])
     await import(join(context, "hurdle", "harness", "lib", "execution-environments", `${module}.mjs`));
   assert.equal(
-    TOGETHER_BARTENDER_SERVER_COMMAND,
+    TOGETHER_SERVER_COMMAND,
     "node /opt/hurdle/harness/bin/hurdle-sandbox-server.mjs",
   );
 });

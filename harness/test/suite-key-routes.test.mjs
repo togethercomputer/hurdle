@@ -25,19 +25,19 @@ const definition = {
 
 const route = (taskIds, environment) => suiteKeyRoutes(definition, taskIds, environment);
 
-test("a Suite key goes only to its API hosts on E2B and the Together socket", () => {
-  for (const environment of [{ kind: "e2b" }, { kind: "together", settings: { snapshotAlias: null } }]) {
+test("a Suite key goes only to its API hosts on the Together socket", () => {
+  for (const environment of [{ kind: "together" }, { kind: "together", settings: {} }]) {
     assert.deepEqual(route(["advisory", "required"], environment), [
       { name: "TOGETHER_API_KEY", hosts: HOSTS, agentVisible: false },
     ]);
   }
-  assert.deepEqual(suiteKeyRows(route(["advisory"], { kind: "e2b" })), [
+  assert.deepEqual(suiteKeyRows(route(["advisory"], { kind: "together" })), [
     ["Keys", "TOGETHER_API_KEY → api.together.ai, api.together.xyz"],
   ]);
 });
 
-test("the Agent holds an advisory Task's key locally and on a Together snapshot", () => {
-  for (const environment of [{ kind: "local" }, { kind: "together", settings: { snapshotAlias: "my-snapshot" } }]) {
+test("the Agent holds an advisory Task's key locally", () => {
+  for (const environment of [{ kind: "local" }]) {
     assert.equal(route(["advisory"], environment)[0].agentVisible, true);
     assert.equal(route(["required"], environment)[0].agentVisible, false);
   }
@@ -47,7 +47,7 @@ test("the Agent holds an advisory Task's key locally and on a Together snapshot"
 });
 
 test("only selected Tasks' keys are listed, one row per key", () => {
-  assert.deepEqual(route(["artifactOnly"], { kind: "e2b" }), []);
+  assert.deepEqual(route(["artifactOnly"], { kind: "together" }), []);
   assert.deepEqual(suiteKeyRows([]), []);
   assert.deepEqual(suiteKeyRows([
     { name: "A_KEY", hosts: ["a.example.com"], agentVisible: false },

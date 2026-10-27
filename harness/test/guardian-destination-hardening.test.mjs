@@ -103,7 +103,7 @@ assert public.response is None
 `, { TAE_EGRESS_INTERCEPT_ALL: "1" });
 });
 
-test("the E2B Guardian refuses plaintext and mismatched capture requests", (t) => {
+test("the Guardian refuses plaintext and mismatched capture requests", (t) => {
   runAddon(t, String.raw`
 plaintext = flow("plaintext", "api.example.com", scheme="http", port=80)
 addon.requestheaders(plaintext)

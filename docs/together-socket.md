@@ -71,9 +71,8 @@ The server answers each with `{"op":"done","id",value}` or
 `{"op":"error","id","message"}`. For `run` it writes the step's output to the two
 named streams and ends them when the step ends; for `write` Hurdle ends the stream
 after the file's bytes; for `read` the server does. A step's `job.kind` is one of
-`setup`, `stage`, `agent`, `collect`, `metadata`, the same code the sandbox API
-path runs over its exec API. Writes are confined to the task root and reads to the
-sealed artifact root; anything else is refused.
+`setup`, `stage`, `agent`, `collect`, `metadata`. Writes are confined to the task
+root and reads to the sealed artifact root; anything else is refused.
 
 **Egress.** Every stream the server opens is one TCP connection the Agent made to
 the sandbox's loopback proxy port, carried verbatim: its first bytes are the
@@ -89,9 +88,10 @@ closes, and a one-hour ttl is the backstop.
 
 ## What Together runs
 
-The image is built from the context `npm run together:bartender-context -- DIR`
-writes: the pinned Agent CLIs, the harness modules the server loads, and the
-Agent's Node runtime, under `/opt/hurdle`. Together starts
+Together builds its Hurdle image from the context
+`npm run together:image-context -- DIR` writes: the pinned Agent CLIs, the
+harness modules the server loads, and the Agent's Node runtime, under
+`/opt/hurdle`. Nothing is built on your side. Together starts
 `node /opt/hurdle/harness/bin/hurdle-sandbox-server.mjs` as root once the sandbox
 is running, with the sandbox launched as above and the egress proxy on
 `127.0.0.1:18082`. The server listens on 18083, which is the one admitted port.

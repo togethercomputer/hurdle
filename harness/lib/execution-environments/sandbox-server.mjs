@@ -15,7 +15,7 @@ import {
   writeLine,
 } from "./sandbox-socket-protocol.mjs";
 
-// The server inside a Bartender Hurdle sandbox. Bartender starts it and
+// The server inside a Together Hurdle sandbox. Together's Hurdle API starts it and
 // connects the client's one WebSocket to it, so this socket is the only way in:
 // the controller writes task inputs, runs task steps and reads sealed results
 // over it, and the Agent's egress flows ride it to the controller's Guardian.

@@ -8,8 +8,8 @@ import test from "node:test";
 
 import {
   assertExchangeFactCapturePolicy,
-  createE2BGuardianController,
-} from "../lib/execution-environments/e2b-guardian.mjs";
+  guardianSubstitutions,
+} from "../lib/execution-environments/guardian.mjs";
 
 const guardianPath = new URL("../verify/proxy/generic_guardian.py", import.meta.url);
 const exchangeFactConformance = JSON.parse(readFileSync(
@@ -17,7 +17,7 @@ const exchangeFactConformance = JSON.parse(readFileSync(
   "utf8",
 ));
 
-test("generic E2B Guardian substitutes only scoped headers and seals metadata", (t) => {
+test("generic Guardian substitutes only scoped headers and seals metadata", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const journal = join(root, "requests.jsonl");
@@ -141,7 +141,7 @@ print(json.dumps(state, separators=(",", ":")))
   });
 });
 
-test("generic E2B Guardian swaps the Agent credential on pass-through hosts without journaling", (t) => {
+test("generic Guardian swaps the Agent credential on pass-through hosts without journaling", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-pass-through-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const journal = join(root, "requests.jsonl");
@@ -314,7 +314,7 @@ assert addon._passthrough == set()
   );
 });
 
-test("generic E2B Guardian refuses a host that is both captured and pass-through", (t) => {
+test("generic Guardian refuses a host that is both captured and pass-through", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-overlap-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const script = String.raw`
@@ -339,7 +339,7 @@ runpy.run_path(os.environ["GUARDIAN_PATH"])
   assert.match(result.stderr, /capture and pass-through hosts overlap/);
 });
 
-test("generic E2B Guardian projects bounded JSON facts without retaining bodies", (t) => {
+test("generic Guardian projects bounded JSON facts without retaining bodies", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-facts-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const journal = join(root, "requests.jsonl");
@@ -549,7 +549,7 @@ assert state["rowCount"] == 1
   });
 });
 
-test("generic E2B Guardian matches bounded whole-segment path templates", (t) => {
+test("generic Guardian matches bounded whole-segment path templates", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-path-template-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const journal = join(root, "requests.jsonl");
@@ -625,7 +625,7 @@ addon.response(flow)
   });
 });
 
-test("generic E2B Guardian projects gzip JSON when only the response side is selected", (t) => {
+test("generic Guardian projects gzip JSON when only the response side is selected", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-gzip-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const journal = join(root, "requests.jsonl");
@@ -725,7 +725,7 @@ assert state["rowCount"] == 1
   });
 });
 
-test("generic E2B Guardian matches the language-neutral exchange-fact fixture", (t) => {
+test("generic Guardian matches the language-neutral exchange-fact fixture", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-conformance-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const journal = join(root, "requests.jsonl");
@@ -791,7 +791,7 @@ addon.response(flow)
   });
 });
 
-test("generic E2B Guardian fails closed on unsafe matched JSON without body disclosure", (t) => {
+test("generic Guardian fails closed on unsafe matched JSON without body disclosure", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-rejections-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const exchangeFacts = {
@@ -922,7 +922,7 @@ print(json.dumps(state, separators=(",", ":")))
   }
 });
 
-test("generic E2B Guardian seals one payload-free WebSocket session at close", (t) => {
+test("generic Guardian seals one payload-free WebSocket session at close", (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-generic-guardian-ws-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const journal = join(root, "requests.jsonl");
@@ -1060,175 +1060,6 @@ print(json.dumps(state, separators=(",", ":")))
   });
 });
 
-test("generic E2B Guardian prepares a checksum-pinned Python 3.12 proxy runtime", async () => {
-  const commands = [];
-  let caReads = 0;
-  let nextPid = 100;
-  const sandbox = {
-    commands: {
-      async run(command, options = {}) {
-        commands.push({ command, options });
-        if (options.background) {
-          return {
-            pid: nextPid++,
-            async kill() {},
-          };
-        }
-        return {
-          stdout: command.includes("socket.create_connection") ? "READY\n" : "",
-          stderr: "",
-          exitCode: 0,
-        };
-      },
-      async list() {
-        return [];
-      },
-    },
-    files: {
-      async write() {},
-      async read(path) {
-        assert.equal(path, "/home/user/.mitmproxy/mitmproxy-ca-cert.pem");
-        caReads += 1;
-        if (caReads === 1) throw new Error("CA material is not visible yet");
-        return "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n";
-      },
-    },
-    async updateNetwork() {},
-    getHost(port) {
-      return `guardian-${port}.example.invalid`;
-    },
-  };
-
-  const guardian = createE2BGuardianController();
-  const session = await guardian.prepare({
-    sandbox,
-    profile: "external-guardian-http-metadata-v1",
-    capture: {
-      mode: "network-egress-metadata-v1",
-      protocols: ["https"],
-      routes: [{ host: "api.example.com", selectedFields: [] }],
-    },
-    credentialBindings: [],
-    credentialValues: {},
-    surrogates: {},
-  });
-  assert.equal(caReads, 2);
-
-  const install = commands.find(({ command }) => command.includes("guardian-requirements.lock"));
-  assert.ok(install, "expected the Guardian proxy runtime install command");
-  assert.match(install.command, /uname -m.*x86_64/);
-  assert.match(install.command, /uv-x86_64-unknown-linux-gnu\.tar\.gz/);
-  assert.match(install.command, /8cc1cd82d434ec565376f98bd938d4b715b5791a80ff2d3aa78821cf85091b4b/);
-  assert.match(install.command, /sha256sum --check --strict/);
-  assert.match(install.command, /python install '3\.12\.12'/);
-  assert.match(install.command, /venv --clear --python '3\.12\.12'/);
-  assert.match(install.command, /--require-hashes --no-deps --no-build/);
-  assert.doesNotMatch(install.command, /python3 -m venv/);
-  assert.equal(install.options.timeoutMs, 360_000);
-
-  const workloadCommands = [];
-  const workloadNetworkUpdates = [];
-  const workload = {
-    commands: {
-      async run(command, options = {}) {
-        workloadCommands.push({ command, options });
-        if (options.background) {
-          return {
-            pid: nextPid++,
-            async kill() {},
-          };
-        }
-        return {
-          stdout: command.includes("socket.create_connection") ? "READY\n" : "",
-          stderr: "",
-          exitCode: 0,
-        };
-      },
-    },
-    files: {
-      async write() {},
-    },
-    async updateNetwork(network) {
-      workloadNetworkUpdates.push(network);
-    },
-  };
-  sandbox.trafficAccessToken = "fixture-traffic-token";
-
-  await guardian.attach({ workload, sandbox, session });
-
-  const trustInstall = workloadCommands.find(({ command }) => (
-    command.includes("ssl.get_default_verify_paths")
-  ));
-  assert.ok(trustInstall, "expected the workload trust install command");
-  assert.equal(trustInstall.command.includes('output.write(b"\\n")'), true);
-  const trustPermissions = workloadCommands.find(({ command }) => (
-    command.includes("seal workload trust permissions")
-  ));
-  assert.ok(trustPermissions, "expected workload trust permissions to be sealed");
-  assert.equal(trustPermissions.options.user, "root");
-  assert.match(trustPermissions.command, /os\.walk\(root\)/);
-  assert.match(trustPermissions.command, /os\.chmod\(directory, 0o755\)/);
-  assert.match(trustPermissions.command, /os\.chmod\(path, 0o555 if executable else 0o444\)/);
-  assert.match(trustPermissions.command, /root = "\/tmp\/tae-egress"/);
-  assert.equal(
-    session.workloadEnvironment.TAE_EGRESS_CA_BUNDLE,
-    "/tmp/tae-egress/ca-bundle.pem",
-  );
-  const routeInstall = workloadCommands.find(({ command }) => (
-    command.includes("socket.getaddrinfo")
-    && command.includes("iptables")
-    && command.includes("ip6tables")
-  ));
-  assert.ok(routeInstall, "expected a root-owned direct-route block");
-  assert.equal(routeInstall.options.user, "root");
-  assert.deepEqual(JSON.parse(routeInstall.options.envs.TAE_CAPTURE_HOSTS), [
-    "api.example.com",
-  ]);
-  assert.deepEqual(workloadNetworkUpdates, []);
-});
-
-function fakeGuardianSandboxes() {
-  let nextPid = 100;
-  const guardianCommands = [];
-  const networkUpdates = [];
-  const workloadCommands = [];
-  const runner = (commands) => ({
-    async run(command, options = {}) {
-      commands.push({ command, options });
-      if (options.background) return { pid: nextPid++, async kill() {} };
-      return {
-        stdout: command.includes("socket.create_connection") ? "READY\n" : "",
-        stderr: "",
-        exitCode: 0,
-      };
-    },
-    async list() {
-      return [];
-    },
-  });
-  const sandbox = {
-    commands: runner(guardianCommands),
-    files: {
-      async write() {},
-      async read() {
-        return "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----\n";
-      },
-    },
-    async updateNetwork(network) {
-      networkUpdates.push(network);
-    },
-    getHost(port) {
-      return `guardian-${port}.example.invalid`;
-    },
-    trafficAccessToken: "fixture-traffic-token",
-  };
-  const workload = {
-    commands: runner(workloadCommands),
-    files: { async write() {} },
-  };
-  return { sandbox, workload, guardianCommands, networkUpdates, workloadCommands };
-}
-
 const anthropicAgentCredential = Object.freeze({
   surrogate: "sk-ant-api03-hurdle_agent_stand_in_fixture",
   value: "sk-ant-api03-real-agent-secret",
@@ -1236,118 +1067,8 @@ const anthropicAgentCredential = Object.freeze({
   headerNames: ["x-api-key", "authorization"],
 });
 
-test("generic E2B Guardian routes the Agent credential through a pass-through host", async () => {
-  const fake = fakeGuardianSandboxes();
-  const guardian = createE2BGuardianController();
-  const session = await guardian.prepare({
-    sandbox: fake.sandbox,
-    profile: "external-guardian-http-metadata-v1",
-    capture: {
-      mode: "network-egress-metadata-v1",
-      protocols: ["https"],
-      routes: [{ host: "api.example.com", selectedFields: [] }],
-    },
-    credentialBindings: [{
-      id: "credential:TARGET_KEY",
-      environmentName: "TARGET_KEY",
-      delivery: {
-        kind: "captured-http-header",
-        hosts: ["api.example.com"],
-        headerNames: ["authorization"],
-      },
-    }],
-    credentialValues: { TARGET_KEY: "real-target-secret" },
-    surrogates: { TARGET_KEY: "tae_visible_target" },
-    agentCredentials: [anthropicAgentCredential],
-  });
-
-  assert.deepEqual(fake.networkUpdates, [{
-    allowOut: ["api.example.com", "api.anthropic.com"],
-    denyOut: ["0.0.0.0/0"],
-  }]);
-  const proxy = fake.guardianCommands.find(({ command }) => command.includes("mitmdump -q -s"));
-  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_CAPTURE_HOSTS), ["api.example.com"]);
-  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_PASSTHROUGH_HOSTS), ["api.anthropic.com"]);
-  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_SUBSTITUTIONS), [
-    {
-      surrogate: "tae_visible_target",
-      value: "real-target-secret",
-      hosts: ["api.example.com"],
-      headerNames: ["authorization"],
-    },
-    anthropicAgentCredential,
-  ]);
-  assert.deepEqual(session.hosts, ["api.example.com"]);
-
-  await guardian.attach({ workload: fake.workload, sandbox: fake.sandbox, session });
-  const relay = fake.workloadCommands.find(({ command }) => command.includes("tcp_ws_bridge.cjs client"));
-  assert.deepEqual(JSON.parse(relay.options.envs.TAE_EGRESS_CAPTURE_HOSTS), [
-    "api.example.com",
-    "api.anthropic.com",
-  ]);
-  assert.deepEqual(JSON.parse(session.workloadEnvironment.TAE_EGRESS_CAPTURE_HOSTS), [
-    "api.example.com",
-    "api.anthropic.com",
-  ]);
-  assert.equal(session.workloadEnvironment.CODEX_CA_CERTIFICATE, "/tmp/tae-egress/ca-bundle.pem");
-  const firewall = fake.workloadCommands.find(({ command }) => command.includes("socket.getaddrinfo"));
-  assert.deepEqual(JSON.parse(firewall.options.envs.TAE_CAPTURE_HOSTS), ["api.example.com"]);
-  const workloadText = JSON.stringify([
-    ...fake.workloadCommands.map(({ command, options }) => ({ command, envs: options.envs })),
-    session.workloadEnvironment,
-  ]);
-  assert.doesNotMatch(workloadText, /real-agent-secret|real-target-secret/);
-});
-
-test("generic E2B Guardian keeps a captured host on its capture route for the Agent credential", async () => {
-  const fake = fakeGuardianSandboxes();
-  const session = await createE2BGuardianController().prepare({
-    sandbox: fake.sandbox,
-    profile: "external-guardian-http-metadata-v1",
-    capture: {
-      mode: "network-egress-metadata-v1",
-      protocols: ["https"],
-      routes: [{ host: "api.anthropic.com", selectedFields: [] }],
-    },
-    credentialBindings: [],
-    credentialValues: {},
-    surrogates: {},
-    agentCredentials: [anthropicAgentCredential],
-  });
-  const proxy = fake.guardianCommands.find(({ command }) => command.includes("mitmdump -q -s"));
-  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_PASSTHROUGH_HOSTS), []);
-  assert.deepEqual(JSON.parse(proxy.options.envs.TAE_EGRESS_SUBSTITUTIONS), [anthropicAgentCredential]);
-  assert.deepEqual(session.routedHosts, ["api.anthropic.com"]);
-});
-
-test("generic E2B Guardian protects the Agent credential when the Task captures nothing", async () => {
-  const fake = fakeGuardianSandboxes();
-  const session = await createE2BGuardianController().prepare({
-    sandbox: fake.sandbox,
-    profile: "external-guardian-http-metadata-v1",
-    capture: { mode: "none" },
-    credentialBindings: [],
-    credentialValues: {},
-    surrogates: {},
-    agentCredentials: [anthropicAgentCredential],
-  });
-  assert.deepEqual(fake.networkUpdates, [{
-    allowOut: ["api.anthropic.com"],
-    denyOut: ["0.0.0.0/0"],
-  }]);
-  assert.deepEqual(session.hosts, []);
-  assert.deepEqual(session.routedHosts, ["api.anthropic.com"]);
-});
-
-test("generic E2B Guardian rejects invalid or colliding Agent credential stand-ins", async () => {
-  const prepare = (agentCredentials, surrogates = {}) => createE2BGuardianController().prepare({
-    sandbox: fakeGuardianSandboxes().sandbox,
-    profile: "external-guardian-http-metadata-v1",
-    capture: {
-      mode: "network-egress-metadata-v1",
-      protocols: ["https"],
-      routes: [{ host: "api.example.com", selectedFields: [] }],
-    },
+test("generic Guardian rejects invalid or colliding Agent credential stand-ins", () => {
+  const substitutions = (agentCredentials, surrogates = {}) => guardianSubstitutions({
     credentialBindings: Object.keys(surrogates).map((name) => ({
       id: `credential:${name}`,
       environmentName: name,
@@ -1360,34 +1081,25 @@ test("generic E2B Guardian rejects invalid or colliding Agent credential stand-i
     credentialValues: Object.fromEntries(Object.keys(surrogates).map((name) => [name, "target"])),
     surrogates,
     agentCredentials,
+    captureHosts: ["api.example.com"],
   });
-  await assert.rejects(
-    prepare([anthropicAgentCredential], { TARGET_KEY: anthropicAgentCredential.surrogate }),
+  assert.throws(
+    () => substitutions([anthropicAgentCredential], { TARGET_KEY: anthropicAgentCredential.surrogate }),
     /stand-ins must be distinct/,
   );
-  await assert.rejects(
-    prepare([anthropicAgentCredential, { ...anthropicAgentCredential, value: "other" }]),
+  assert.throws(
+    () => substitutions([anthropicAgentCredential, { ...anthropicAgentCredential, value: "other" }]),
     /stand-ins must be distinct/,
   );
-  await assert.rejects(
-    prepare([{ ...anthropicAgentCredential, value: anthropicAgentCredential.surrogate }]),
+  assert.throws(
+    () => substitutions([{ ...anthropicAgentCredential, value: anthropicAgentCredential.surrogate }]),
     /Agent credential policy is invalid/,
   );
-  await assert.rejects(
-    prepare([{ ...anthropicAgentCredential, hosts: [] }]),
+  assert.throws(
+    () => substitutions([{ ...anthropicAgentCredential, hosts: [] }]),
     /Agent credential policy is invalid/,
   );
-});
-
-test("generic E2B Guardian rejects attach without restricted public traffic", async () => {
-  await assert.rejects(
-    createE2BGuardianController().attach({
-      workload: {},
-      sandbox: {},
-      session: {},
-    }),
-    /restricted public traffic and a traffic access token/,
-  );
+  assert.deepEqual(substitutions([anthropicAgentCredential]).passthroughHosts, ["api.anthropic.com"]);
 });
 
 test("intercept-all Guardian forwards every host, streams and journals non-capture hosts within a non-truncating budget", (t) => {

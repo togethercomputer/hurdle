@@ -3,7 +3,7 @@ import { Duplex } from "node:stream";
 import { Session } from "./yamux.mjs";
 
 // The single WebSocket between the controller and the server inside a
-// Bartender Hurdle sandbox carries one yamux session: binary frames
+// Together Hurdle sandbox carries one yamux session: binary frames
 // concatenate into the session's byte stream. The controller is the yamux
 // client, so its streams have odd ids; the server's have even ids.
 //

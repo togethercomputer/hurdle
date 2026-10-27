@@ -1,14 +1,13 @@
 import { readFile } from "node:fs/promises";
 
-import { installWorkloadTrust } from "./e2b-guardian.mjs";
+import { installWorkloadTrust } from "./guardian.mjs";
 import { createLinuxSandboxOperations } from "./linux-sandbox-operations.mjs";
 import { createLocalWorkload } from "./local-workload.mjs";
 import { blockSandboxAgentPort, verifyGuardianPath } from "./together-workload-egress.mjs";
 
-// One step of a Hurdle task, run by the server inside a Bartender Hurdle
-// sandbox. Each step is the code the controller runs over the sandbox API on
-// the other Together path, here against this sandbox's own processes, so the
-// controller only ever writes inputs, runs a step and reads results.
+// One step of a Hurdle task, run by the server inside a Together Hurdle
+// sandbox against this sandbox's own processes, so the controller only ever
+// writes inputs, runs a step and reads results.
 export function createSandboxTask({
   caPath,
   nodeRuntimeRoot = null,
@@ -21,7 +20,7 @@ export function createSandboxTask({
       if (!Array.isArray(hosts) || hosts.some((host) => typeof host !== "string"))
         throw new TypeError("Sandbox setup requires capture hosts");
       const certificate = await readFile(caPath, "utf8");
-      // Bartender starts the sandbox without internet access, DNS included, so no
+      // Together starts the sandbox without internet access, DNS included, so no
       // route bypasses the Guardian and there is none to refuse.
       await installWorkloadTrust(
         workload, certificate, hosts, undefined, "-legacy", "DROP",

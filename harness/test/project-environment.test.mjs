@@ -11,7 +11,7 @@ test("project .env.local overrides stale inherited credentials", async (t) => {
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await writeFile(join(cwd, ".env.local"), [
     "ANTHROPIC_API_KEY=working-local-key",
-    "E2B_TEMPLATE=tae-claude:v2",
+    "CUSTOM_SETTING=tae-claude:v2",
     "",
   ].join("\n"));
 
@@ -22,7 +22,7 @@ test("project .env.local overrides stale inherited credentials", async (t) => {
 
   assert.equal(selected.environment.ANTHROPIC_API_KEY, "working-local-key");
   assert.equal(selected.environment.TOGETHER_API_KEY, "shell-together-key");
-  assert.equal(selected.environment.E2B_TEMPLATE, "tae-claude:v2");
+  assert.equal(selected.environment.CUSTOM_SETTING, "tae-claude:v2");
   assert.match(selected.source, /^\.env\.local/);
 });
 

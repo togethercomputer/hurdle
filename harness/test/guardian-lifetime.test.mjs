@@ -64,7 +64,7 @@ test("the Guardian stops at its hard lifetime even while its controller lives", 
   assert.equal(existsSync(directory), true, "a live controller cleans up after itself");
 });
 
-test("without the guards, as on E2B, the Guardian ignores its stdin", async (t) => {
+test("without the guards, the Guardian ignores its stdin", async (t) => {
   const { child, exited } = await startGuardian(t, () => ({}));
   child.stdin.end();
   assert.equal(await within(exited, 1_500), "still running");

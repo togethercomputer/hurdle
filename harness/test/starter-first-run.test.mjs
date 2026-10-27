@@ -40,13 +40,6 @@ test("starter READMEs give npx users commands that work in their own project", a
     }
     assert.doesNotMatch(readme, /`hurdle init|`init --/, "init examples include npx hurdle");
   }
-  // Without --yes, setup stops before building a missing sandbox image.
-  for (const example of EXAMPLES) {
-    const readme = readFileSync(join(f.root, example, "README.md"), "utf8");
-    for (const command of shellCommands(readme).filter(line => / setup\b/.test(line))) {
-      assert.match(command, / --yes\b/, `${example} README: ${command}`);
-    }
-  }
 });
 
 test("init keeps .env.local and results out of git without clobbering .gitignore", async t => {
@@ -83,20 +76,20 @@ test("init keeps .env.local and results out of git without clobbering .gitignore
   assert.equal(existsSync(join(failed.root, ".gitignore")), false);
 });
 
-test("init and run suggest setup --yes, as the README does", async t => {
+test("init and run suggest setup, as the README does", async t => {
   const f = project(t);
   const cli = createFrameworkCli();
   assert.equal(await cli.main(["init", "api-evals", "--example", "together-api"], f.io), 0, f.output());
   const executable = cliExecutable(f.root);
-  assert.match(f.output(), /^  Needs\s+E2B or Together sandbox \+ TOGETHER_API_KEY$/m);
-  assert.ok(f.output().includes(`Next      ${executable} setup api-evals/example.suite.mjs --yes\n`), f.output());
+  assert.match(f.output(), /^  Needs\s+Together sandbox \+ TOGETHER_API_KEY$/m);
+  assert.ok(f.output().includes(`Next      ${executable} setup api-evals/example.suite.mjs\n`), f.output());
 
   const g = project(t);
   assert.equal(await cli.main(["init", "--example", "together-api"], g.io), 0, g.output());
-  assert.ok(g.output().includes(`Next      ${executable} setup --yes\n`), g.output());
+  assert.ok(g.output().includes(`Next      ${executable} setup\n`), g.output());
   // The Local Runtime cannot capture API traffic, so run stops before any work.
   assert.equal(await cli.main(["run"], g.io), 1);
-  assert.ok(g.output().includes(`Run \`${executable} setup --yes\` to configure E2B sandbox`), g.output());
+  assert.ok(g.output().includes(`Run \`${executable} setup\` to configure the Together sandbox`), g.output());
 });
 
 test("setup names a key once when the sandbox and a Task both need it", async () => {

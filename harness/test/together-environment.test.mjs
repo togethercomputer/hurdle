@@ -255,8 +255,8 @@ test("Together capture overflow remains visible to Run Trust", async () => {
   assert.equal(result.process.stdout.complete, false);
 });
 
-test("a sealed-only provider refuses an environment credential with no API hosts to carry it, with a reason", async () => {
-  const provider = { ...fixture().provider, sealedOnly: true, async acquire() { throw new Error("must not allocate"); } };
+test("the environment refuses an environment credential with no API hosts to carry it, with a reason", async () => {
+  const provider = { ...fixture().provider, async acquire() { throw new Error("must not allocate"); } };
   const guardian = { async prepare() { throw new Error("must not start"); }, async attach() {}, async seal() {} };
   const environment = createTogetherExecutionEnvironment({ apiKey: "provider", provider, guardian });
   await assert.rejects(environment.execute(envelope({
@@ -265,11 +265,10 @@ test("a sealed-only provider refuses an environment credential with no API hosts
   })), (error) => /no API hosts to carry KEY/.test(error.message) && error.operatorReason === error.message);
 });
 
-test("a sealed-only provider delivers an environment credential through the Guardian on the task's API hosts", async () => {
+test("the environment delivers an environment credential through the Guardian on the task's API hosts", async () => {
   const seen = {};
   const provider = {
     ...fixture().provider,
-    sealedOnly: true,
     async run(_resource, { environment }) { seen.workloadKey = environment.KEY; return { exitCode: 0, quiescent: true, durationMs: 1 }; },
   };
   const guardian = {
@@ -429,29 +428,24 @@ test("Together seal failure is incomplete only for tasks with capture hosts", as
   }
 });
 
-test("Together settings validate CPU, per-CPU memory, lifetime, and snapshot names", () => {
+test("Together settings validate CPU, per-CPU memory, and lifetime", () => {
   for (const settings of [
     { cpuCount: 0 },
     { cpuCount: 17 },
     { cpuCount: 2, memoryMiB: 1024 },
     { memoryMiB: 16384 },
     { maxLifetimeMs: 0 },
-    { snapshotAlias: "" },
-    { snapshotAlias: "REPLACE_WITH_SNAPSHOT" },
+    { snapshotAlias: "custom@v1" },
     { snapshotId: "unsupported" },
   ])
     assert.throws(() => normalizeTogetherSettings(settings));
   assert.equal(
-    normalizeTogetherSettings({
-      snapshotAlias: "custom@v1",
-      cpuCount: 2,
-      memoryMiB: 4096,
-    }).snapshotAlias,
-    "custom@v1",
+    normalizeTogetherSettings({ cpuCount: 2, memoryMiB: 4096 }).memoryMiB,
+    4096,
   );
 });
 test("Together Runtime files resolve secrets by name without persisting credentials", () => {
-  const config = createRuntimeConfig("together", { snapshot: "custom@v1" });
+  const config = createRuntimeConfig("together");
   const profile = resolveRuntimeProfile(
     { cwd: "/workspace", runtimePath: "runtime.json" },
     { readFile: () => JSON.stringify(config) },
@@ -480,7 +474,7 @@ test("Together Runtime files resolve secrets by name without persisting credenti
     /cpuCount/,
   );
   assert.equal(
-    createRuntimeConfig("together-postgres", { snapshot: "custom@v1" })
+    createRuntimeConfig("together-postgres")
       .resultStore.kind,
     "postgres",
   );

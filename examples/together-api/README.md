@@ -5,26 +5,18 @@ One Agent looks up Together models, makes one short chat completion, saves
 response and captured HTTP activity in the Results Viewer.
 
 ```sh
-npx hurdle setup --yes
-npx hurdle run --view
-```
-
-E2B is the default sandbox. To use Together Sandbox instead:
-
-```sh
-npx hurdle setup --sandbox together --yes
+npx hurdle setup
 npx hurdle run --view
 ```
 
 From the repository root, pass `examples/together-api/example.suite.mjs` to both
 commands and replace `npx hurdle` with `node harness/bin/hurdle.mjs`.
 
-Setup configures E2B and reads Agent, E2B and Together credentials from
-`.env.local` or the environment. Keep `.env.local` out of version control.
-Use `--interactive` for credential prompts. Setup may build an E2B
-template; it checks authentication through read-only requests and never runs
-inference or the evaluation. Remote tools and model access remain unverified
-until the run.
+Setup configures the Together sandbox and reads Agent and Together credentials
+from `.env.local` or the environment. Keep `.env.local` out of version control.
+Use `--interactive` for credential prompts. Setup checks authentication through
+read-only requests and never runs inference or the evaluation. Nothing is built.
+Remote tools and model access remain unverified until the run.
 
 The starter pins `claude-opus-5-5` with `effort: "medium"`. Use
 `npx hurdle init codex-api-evals --example together-api --agent codex` for
@@ -33,18 +25,15 @@ The starter pins `claude-opus-5-5` with `effort: "medium"`. Use
 or edit the Suite to change these settings.
 
 The Suite uses one task, one baseline condition, and one repeat, with code
-scoring and no Judge. E2B setup requires `E2B_API_KEY` and uses two sandboxes,
-a workload and a Guardian, each with a five-minute lifetime limit. Existing
-runtime limits are preserved on reruns. Agent, sandbox, and Together API usage
-may be billed.
+scoring and no Judge. Setup requires `TOGETHER_API_KEY`. Each cell uses one
+sandbox VM with a ten-minute lifetime limit; the Guardian runs on your machine.
+Existing runtime limits are preserved on reruns. Agent, sandbox, and Together
+API usage may be billed.
 
-Together setup builds or reuses `hurdle-claude-code-network@v1`, with Linux
-firewall tools. It uses a separate Guardian VM for the same trusted HTTP activity,
-selected response headers, request blocking, and bounded exchange facts as E2B.
-New Together API runtimes use a ten-minute lifetime per VM. The real target key
-stays in the Guardian; the Agent receives a surrogate. Both VMs terminate without
-retaining a result snapshot. The Agent's own model credential also stays in the
-Guardian on both E2B and Together. See
+The Guardian records trusted HTTP activity, selected response headers, request
+blocking, and bounded exchange facts. The real target key stays in the
+Guardian; the Agent receives a surrogate. The Agent's own model credential also
+stays in the Guardian. See
 [where credentials live](../../docs/sandbox-setup.md#where-credentials-live).
 
 The prompt instructs the Agent to make one model-list call and one completion

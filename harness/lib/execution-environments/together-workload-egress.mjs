@@ -1,9 +1,8 @@
-import { RELAY_PORT } from "./e2b-guardian.mjs";
+import { RELAY_PORT } from "./guardian.mjs";
 
 // Steps that seal a Together workload's egress once its loopback relay port
-// reaches the controller-host Guardian. Run by the controller over the sandbox
-// API, or by the server inside a Bartender Hurdle sandbox against its own
-// processes.
+// reaches the controller-host Guardian. Run by the server inside a Together
+// Hurdle sandbox against its own processes.
 
 // The Guardian answers CONNECTs to this host itself, so the path can be proven
 // even when a task has no capture hosts.

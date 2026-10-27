@@ -68,15 +68,14 @@
     "tag": "latest"
   },
   "scripts": {
-    "setup": "npm install --omit=optional && npm --prefix harness install --omit=optional && npm --prefix viewer install",
-    "setup:backends": "npm --prefix harness install --include=optional",
-    "setup:ci": "npm ci --omit=optional && npm --prefix harness ci --include=optional && npm --prefix viewer ci",
+    "setup": "npm install && npm --prefix harness install && npm --prefix viewer install",
+    "setup:ci": "npm ci && npm --prefix harness ci && npm --prefix viewer ci",
     "test": "npm --prefix harness test && npm --prefix viewer test",
     "tae": "node harness/bin/tae.mjs",
     "hurdle": "node harness/bin/hurdle.mjs",
     "preflight": "node harness/bin/preflight.mjs",
     "runtime:init": "node harness/bin/init-runtime.mjs",
-    "together:bartender-context": "node harness/bin/together-bartender-context.mjs",
+    "together:image-context": "node harness/bin/together-image-context.mjs",
     "db:migrate": "node harness/bin/migrate-postgres-result-store.mjs",
     "quickstart": "node harness/bin/source-quickstart.mjs",
     "showcase": "npm run legacy --",
@@ -90,16 +89,12 @@
     "prepack": "npm run build"
   },
   "dependencies": {
-    "pg": "^8.23.0"
-  },
-  "bundleDependencies": [
-    "pg"
-  ],
-  "optionalDependencies": {
-    "e2b": "^2.38.2",
-    "https-proxy-agent": "7.0.6",
-    "together-sandbox": "4.1.1",
+    "pg": "^8.23.0",
     "ws": "8.21.1"
   },
+  "bundleDependencies": [
+    "pg",
+    "ws"
+  ],
   "license": "MIT"
 }

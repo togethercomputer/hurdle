@@ -24,7 +24,7 @@ import {
   stopProcess,
   waitForPort,
   workloadProxyEnvironment,
-} from "./e2b-guardian.mjs";
+} from "./guardian.mjs";
 import { startTogetherControllerRelay } from "./together-controller-relay.mjs";
 import { blockSandboxAgentPort, verifyGuardianPath } from "./together-workload-egress.mjs";
 import {
@@ -259,7 +259,7 @@ export function createTogetherGuardianController({
     },
     async attach({ workload, session, signal }) {
       if (typeof workload.attachEgress === "function") {
-        // Bartender's Hurdle API: the workload's only transport is one socket,
+        // Together's Hurdle API: the workload's only transport is one socket,
         // which carries every flow to the Guardian, and the server inside the
         // sandbox seals its own egress with the same steps as below.
         session.workload = workload;

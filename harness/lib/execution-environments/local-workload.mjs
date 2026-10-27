@@ -7,10 +7,9 @@ import {
   DEFAULT_CONTROLLER_CAPTURE_MAX_BYTES,
 } from "../controller-transcript.mjs";
 
-// The workload contract of together-provider.mjs, served by this machine's own
-// processes. The server inside a Bartender Hurdle sandbox runs the same
-// staging, launch and sealing code against it that the controller otherwise
-// runs over the sandbox API.
+// The Linux workload contract (files and commands), served by this machine's
+// own processes. The server inside a Together Hurdle sandbox runs the staging,
+// launch and sealing code against it.
 
 function abortError() {
   return Object.assign(new Error("Local command cancelled"), { name: "AbortError" });

@@ -79,7 +79,7 @@ function capturedToolInput(snapshot) {
     egress: [{
       status: "captured",
       provenance: {
-        producer: "controlled-e2b",
+        producer: "controlled-sandbox",
         authority: "environment",
         lifecyclePhase: "execution",
         capturedAt: "2026-08-28T12:00:00.000Z",
@@ -439,7 +439,7 @@ test("representative Claude and Codex Runs store code, Judge, version, and denom
   assert.equal(resolved.ok, true, JSON.stringify(resolved.diagnostics));
   const store = await openLocalResultStore({ root: join(root, "results") });
   const environment = {
-    id: "controlled-e2b",
+    id: "controlled-sandbox",
     capabilities: ["environment.isolated-workspace", "environment.trusted-egress-capture"],
     captureCapabilities: { protocols: ["https"], selectedFields: true },
     normalizeSettings(settings = {}) { return settings; },
@@ -474,7 +474,7 @@ test("representative Claude and Codex Runs store code, Judge, version, and denom
         egressCollections: [{
           status: "captured",
           provenance: {
-            producer: "controlled-e2b",
+            producer: "controlled-sandbox",
             authority: "environment",
             lifecyclePhase: "execution",
             capturedAt: "2026-08-28T12:00:01.000Z",

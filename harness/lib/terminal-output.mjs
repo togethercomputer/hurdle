@@ -55,18 +55,16 @@ export function runtimeSummaryRows(runtime, cwd, { inline = false } = {}) {
     : inline ? "Command-line configuration" : "Built-in Local default";
   return [
     ["Runtime", configuration],
-    ["Execution", { local: "Local", e2b: "E2B sandbox", together: "Together sandbox" }[runtime.environment.kind]],
+    ["Execution", { local: "Local", together: "Together sandbox" }[runtime.environment.kind]],
     ["Store", runtime.resultStore.kind === "postgres" ? "Postgres" : "Filesystem"],
   ];
 }
 
-// Where each selected Task's Suite key goes during a run. On E2B and on the
-// Together socket it stays in the Guardian, which sends it only to the
-// Suite's API hosts. Locally, and on a Together snapshot for a Task without
-// required request or tool checks, the Agent's own environment holds it.
+// Where each selected Task's Suite key goes during a run. On the Together
+// socket it stays in the Guardian, which sends it only to the Suite's API
+// hosts. Locally, the Agent's own environment holds it.
 export function suiteKeyRoutes(definition, taskIds, environment) {
-  const guardianOnly = environment.kind === "e2b"
-    || (environment.kind === "together" && !environment.settings?.snapshotAlias);
+  const guardianOnly = environment.kind === "together";
   const routes = new Map();
   for (const taskId of taskIds) {
     const task = definition.tasks[taskId];

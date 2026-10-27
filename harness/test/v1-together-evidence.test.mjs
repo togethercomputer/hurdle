@@ -100,7 +100,7 @@ function captured(requests) {
     status: "captured",
     requests,
     provenance: {
-      producer: "controlled-e2b",
+      producer: "controlled-sandbox",
       authority: "environment",
       lifecyclePhase: "execution",
       capturedAt: observedAt,
@@ -126,7 +126,7 @@ function evaluatorInput({ mode = "captured", artifact = "valid" } = {}) {
           reason: "capture-failed",
           requests: [],
           provenance: {
-            producer: "controlled-e2b",
+            producer: "controlled-sandbox",
             authority: "environment",
             lifecyclePhase: "execution",
             capturedAt: observedAt,
@@ -220,7 +220,7 @@ test("v1 request and artifact expectations preserve pass, fail, and unavailable"
 
 function controlledEnvironment(observedEnvelopes) {
   return {
-    id: "controlled-e2b",
+    id: "controlled-sandbox",
     capabilities: [
       "environment.isolated-workspace",
       "environment.trusted-egress-capture",
@@ -281,7 +281,7 @@ function controlledEnvironment(observedEnvelopes) {
   };
 }
 
-test("the real Together tracer admits both first-party Adapters only with trusted E2B", async (t) => {
+test("the real Together tracer admits both first-party Adapters only with a trusted sandbox", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-v1-evidence-engine-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   writeTogetherTracer(root);

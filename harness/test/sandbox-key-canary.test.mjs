@@ -9,11 +9,8 @@ import {
   closeExecutionCredentialLease,
   createExecutionEnvelope,
 } from "../lib/execution-envelope.mjs";
-import { createE2BExecutionEnvironment } from "../lib/execution-environments/e2b.mjs";
-import { createE2BProvider } from "../lib/execution-environments/e2b-provider.mjs";
 import { createSandboxServer } from "../lib/execution-environments/sandbox-server.mjs";
 import { createTogetherExecutionEnvironment } from "../lib/execution-environments/together.mjs";
-import { createTogetherProvider } from "../lib/execution-environments/together-provider.mjs";
 import { createTogetherSocketProvider } from "../lib/execution-environments/together-socket-provider.mjs";
 
 // Canary: real-looking keys go in everywhere the controller holds them (the
@@ -101,91 +98,6 @@ function stubGuardian(seen) {
     close() {},
   };
 }
-
-// A Linux VM that records everything sent to it and answers the shared
-// sandbox operations just enough for a run to reach and finish the Agent.
-function recordingWorkload(records) {
-  return {
-    sandboxId: "canary-vm",
-    files: {
-      async write(pathOrWrites, data, options) {
-        const writes = Array.isArray(pathOrWrites) ? pathOrWrites : [{ path: pathOrWrites, data }];
-        for (const entry of writes) records.push({ write: entry.path, options }, entry.data ?? "");
-      },
-      async read() { return ""; },
-      async getInfo() { return {}; },
-    },
-    commands: {
-      async run(command, options = {}) {
-        records.push({ command, envs: options.envs ?? null, cwd: options.cwd ?? null });
-        if (command.startsWith("id -u")) return { exitCode: 0, stdout: "1001\n1001\n" };
-        if (command.includes("TAE_PROCESS_CENSUS_SNAPSHOT")) return { exitCode: 0, stdout: "TAE_PROCESS_CENSUS_SNAPSHOT=[]\n" };
-        if (command.includes("TAE_PROCESS_CENSUS_CLEANUP")) return { exitCode: 0, stdout: 'TAE_PROCESS_CENSUS_CLEANUP={"remaining":[]}\n' };
-        return { exitCode: 0, stdout: "" };
-      },
-    },
-  };
-}
-
-function launchFile(records) {
-  const index = records.findIndex((record) => typeof record?.write === "string" && record.write.endsWith("/launch.json"));
-  return index < 0 ? null : JSON.parse(records[index + 1]);
-}
-
-test("E2B sends no real key into the Agent's VM", async () => {
-  const records = [];
-  const seen = {};
-  const real = createE2BProvider();
-  const provider = {
-    ...real,
-    async acquire({ role }) {
-      // Only the Agent's VM records; the Guardian is stubbed.
-      return role === "capture" ? { sandboxId: "canary-guardian-vm" } : recordingWorkload(records);
-    },
-    async validate() {},
-    async dispose() {},
-    async isDisposed() { return true; },
-  };
-  const environment = createE2BExecutionEnvironment({ apiKey: "e2b-controller-key", provider, guardian: stubGuardian(seen) });
-  const envelope = canaryEnvelope(environment.normalizeSettings({}));
-  try {
-    await environment.execute(envelope);
-  } finally {
-    closeExecutionCredentialLease(envelope);
-  }
-  const launch = launchFile(records);
-  assert.ok(launch, "the run reached the Agent launch");
-  assert.equal(seen.guardianTarget, TARGET_KEY);
-  assert.deepEqual(seen.guardianAgent, ["ANTHROPIC_API_KEY", "CODEX_API_KEY"]);
-  assert.match(launch.env.ANTHROPIC_API_KEY, /^sk-ant-api03-/);
-  assert.match(launch.env.TOGETHER_API_KEY, /^tae_visible_/);
-  assert.deepEqual(leakedNames(records), []);
-});
-
-test("Together's sandbox API sends no real key into the Agent's VM", async () => {
-  const records = [];
-  const seen = {};
-  const real = createTogetherProvider();
-  const provider = {
-    ...real,
-    async acquire() { return recordingWorkload(records); },
-    async dispose() {},
-    async isDisposed() { return true; },
-  };
-  const environment = createTogetherExecutionEnvironment({ apiKey: "together-controller-key", provider, guardian: stubGuardian(seen) });
-  const envelope = canaryEnvelope(environment.normalizeSettings({ snapshotAlias: "canary-snapshot", cpuCount: 1, memoryMiB: 2048 }));
-  try {
-    await environment.execute(envelope);
-  } finally {
-    closeExecutionCredentialLease(envelope);
-  }
-  const launch = launchFile(records);
-  assert.ok(launch, "the run reached the Agent launch");
-  assert.equal(seen.guardianTarget, TARGET_KEY);
-  assert.match(launch.env.ANTHROPIC_API_KEY, /^sk-ant-api03-/);
-  assert.match(launch.env.TOGETHER_API_KEY, /^tae_surrogate_/);
-  assert.deepEqual(leakedNames(records), []);
-});
 
 test("Together's Hurdle socket sends no real key into the sandbox", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "hurdle-key-canary-"));
