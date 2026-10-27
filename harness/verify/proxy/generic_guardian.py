@@ -16,7 +16,10 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
+import sys
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -1202,4 +1205,40 @@ class GenericGuardian:
             self._finish_http(flow, None)
 
 
+def _start_lifetime_guards() -> None:
+    """Keep this process, and the real credentials it holds, from outliving its run.
+
+    The controller-host Guardian sets both. With TAE_EGRESS_EXIT_WITH_CONTROLLER,
+    the controller holds this process's stdin open and never writes to it.
+    However the controller ends, even by SIGKILL, the pipe then closes; the
+    Guardian removes its own directory (CA key, journal) and exits.
+    TAE_EGRESS_MAX_LIFETIME_S is a hard stop for a run that outlives its
+    sandbox; the controller, still alive then, cleans up itself.
+    """
+    if os.environ.get("TAE_EGRESS_EXIT_WITH_CONTROLLER") == "1":
+        cleanup = os.environ.get("TAE_EGRESS_CLEANUP_DIR") or None
+
+        def exit_with_controller() -> None:
+            try:
+                while sys.stdin.buffer.read(4096):
+                    pass
+            except (OSError, ValueError):
+                pass
+            if cleanup:
+                shutil.rmtree(cleanup, ignore_errors=True)
+            os._exit(0)
+
+        threading.Thread(target=exit_with_controller, name="tae-exit-with-controller", daemon=True).start()
+    lifetime = os.environ.get("TAE_EGRESS_MAX_LIFETIME_S")
+    if lifetime:
+        seconds = max(1, int(lifetime))
+
+        def expire() -> None:
+            time.sleep(seconds)
+            os._exit(3)
+
+        threading.Thread(target=expire, name="tae-max-lifetime", daemon=True).start()
+
+
+_start_lifetime_guards()
 addons = [GenericGuardian()]

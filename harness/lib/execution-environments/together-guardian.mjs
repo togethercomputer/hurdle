@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
@@ -90,6 +90,25 @@ async function waitForLocalPort(port, child, signal) {
   throw new Error("Guardian proxy did not start");
 }
 
+// The Guardian stops on its own this long after its sandbox's lifetime ends,
+// leaving time to drain and seal its journal.
+const LIFETIME_GRACE_MS = 10 * 60_000;
+const DEFAULT_LIFETIME_MS = 60 * 60_000;
+const GUARDIAN_DIRECTORY_PREFIX = "hurdle-guardian-";
+
+// A Guardian directory holds the per-run CA key. Ones this old belong to no
+// live Guardian, since each stops by its lifetime limit; remove them, for
+// example after the machine lost power mid-run.
+export async function sweepStaleGuardianDirectories(root = tmpdir(), { now = Date.now(), maxAgeMs = 26 * 60 * 60_000 } = {}) {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith(GUARDIAN_DIRECTORY_PREFIX)) continue;
+    const path = join(root, entry.name);
+    const info = await stat(path).catch(() => null);
+    if (info && now - info.mtimeMs > maxAgeMs) await rm(path, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 async function stopLocalProcess(child) {
   if (!child) return;
   const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -156,7 +175,7 @@ export function createTogetherGuardianController({
   return Object.freeze({
     async prepare({
       capture, credentialBindings, credentialValues, surrogates, profile, signal,
-      agentCredentials = [],
+      agentCredentials = [], maxLifetimeMs = DEFAULT_LIFETIME_MS,
     }) {
       if (profile !== "external-guardian-http-metadata-v1") {
         throw new TypeError("unsupported external Guardian capture profile");
@@ -175,7 +194,8 @@ export function createTogetherGuardianController({
         agentCredentials,
         captureHosts: hosts,
       });
-      const directory = await mkdtemp(join(tmpdir(), "hurdle-guardian-"));
+      await sweepStaleGuardianDirectories();
+      const directory = await mkdtemp(join(tmpdir(), GUARDIAN_DIRECTORY_PREFIX));
       const session = {
         directory,
         journalPath: join(directory, "requests.jsonl"),
@@ -199,7 +219,9 @@ export function createTogetherGuardianController({
           "--set", "upstream_cert=false",
           "--set", `confdir=${join(directory, "mitmproxy")}`,
         ], {
-          stdio: "ignore",
+          // stdin stays open for the Guardian's life: when this process ends,
+          // however it ends, the pipe closes and the Guardian exits with it.
+          stdio: ["pipe", "ignore", "ignore"],
           // Only the policy reaches the proxy; the host's own proxy and
           // credential variables stay out of the Guardian environment.
           env: {
@@ -217,9 +239,13 @@ export function createTogetherGuardianController({
             TAE_EGRESS_MAX_ROWS: String(MAX_CAPTURE_ROWS),
             TAE_EGRESS_MAX_BYTES: String(MAX_CAPTURE_BYTES),
             TAE_EGRESS_INTERCEPT_ALL: "1",
+            TAE_EGRESS_EXIT_WITH_CONTROLLER: "1",
+            TAE_EGRESS_CLEANUP_DIR: directory,
+            TAE_EGRESS_MAX_LIFETIME_S: String(Math.ceil((maxLifetimeMs + LIFETIME_GRACE_MS) / 1000)),
           },
         });
         session.proxy.once("error", () => {});
+        session.proxy.stdin?.on("error", () => {});
         await waitForLocalPort(session.proxyPort, session.proxy, signal);
         session.caCertificate = await readCaCertificate(
           join(directory, "mitmproxy", "mitmproxy-ca-cert.pem"),

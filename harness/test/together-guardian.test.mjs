@@ -91,6 +91,11 @@ test("Together host Guardian runs the proxy locally, routes all workload egress 
     { surrogate: "agent-surrogate", value: "real-agent-token", hosts: ["api.anthropic.com"], headerNames: ["authorization"] },
   ]);
   assert.equal(proxyEnvironment.HURDLE_TEST_HOST_SECRET, undefined, "host variables must not reach the proxy");
+  // The Guardian cannot outlive this process or its sandbox's lifetime.
+  assert.equal(proxyEnvironment.TAE_EGRESS_EXIT_WITH_CONTROLLER, "1");
+  assert.equal(proxyEnvironment.TAE_EGRESS_CLEANUP_DIR, session.directory);
+  assert.equal(proxyEnvironment.TAE_EGRESS_MAX_LIFETIME_S, String(70 * 60), "default one-hour lifetime plus grace");
+  assert.equal(session.proxy.stdin.writable, true, "stdin is held open for the Guardian's life");
 
   const workload = fakeWorkload();
   await controller.attach({ workload, session });
@@ -140,6 +145,17 @@ test("Together host Guardian rejects a journal whose digest does not match the s
   t.after(() => controller.close(session));
   await controller.attach({ workload: fakeWorkload(), session });
   await assert.rejects(controller.seal({ session }), /digest mismatch/);
+});
+
+test("Together host Guardian's hard stop follows the sandbox lifetime", async (t) => {
+  const controller = createTogetherGuardianController({
+    findRuntime: await fakeMitmdump(t).then((runtime) => () => runtime),
+    startRelay: async () => ({ assertHealthy() {}, allowShutdown() {}, close() {} }),
+  });
+  const session = await controller.prepare({ capture, ...credentials, maxLifetimeMs: 5 * 60_000 });
+  t.after(() => controller.close(session));
+  const proxyEnvironment = JSON.parse(await readFile(join(session.directory, "env.json"), "utf8"));
+  assert.equal(proxyEnvironment.TAE_EGRESS_MAX_LIFETIME_S, String(15 * 60));
 });
 
 test("Together host Guardian fails before allocation when its runtime is not installed", async () => {

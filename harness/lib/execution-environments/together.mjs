@@ -248,6 +248,7 @@ export function createTogetherExecutionEnvironment({
               credentialBindings, credentialValues,
               surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
               agentCredentials: agentSubstitutions,
+              maxLifetimeMs: settings.maxLifetimeMs,
               signal: envelope.signal,
             });
             active(envelope.signal);
