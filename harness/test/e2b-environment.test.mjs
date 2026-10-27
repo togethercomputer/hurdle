@@ -365,6 +365,76 @@ for (const [authName, credential, standInPrefix] of [
   });
 }
 
+test("E2B keeps an advisory Task's API key in the Guardian too", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "tae-e2b-advisory-task-key-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const pack = await togetherRunPlan();
+  for (const task of Object.values(pack.definition.tasks)) {
+    // Undo the test helper's capture override: authoring delivers an advisory
+    // Suite's key through the environment.
+    delete task.credentialDeliveryOverrides;
+    task.egress.captureMode = "optional";
+    task.executionRequirements = ["environment.isolated-workspace"];
+  }
+  const secret = "advisory-target-secret";
+  const runtime = controlledRuntime([], secret);
+  const engine = createRunEngine({
+    resultStore: await openLocalResultStore({ root: join(root, "results") }),
+    agentAdapter: controlledAdapter(),
+    executionEnvironment: createE2BExecutionEnvironment({
+      apiKey: "e2b-test-key",
+      provider: runtime.provider,
+      guardian: runtime.guardian,
+      entropy: () => "advisory-entropy",
+    }),
+  });
+  assert.deepEqual(
+    pack.definition.credentialRequirements.TOGETHER_API_KEY.delivery,
+    { kind: "environment" },
+    "the Suite declares environment delivery",
+  );
+
+  const result = await engine.run({
+    runPlan: pack,
+    taskIds: ["chat-app"],
+    conditionIds: ["baseline"],
+    credentials: { TOGETHER_API_KEY: secret },
+  });
+
+  // controlledRuntime asserts the Guardian receives a captured binding with
+  // the real value and the workload a tae_visible_ stand-in.
+  assert.equal(result.status, "complete", JSON.stringify(result));
+  assert.equal(result.runs[0].verdict, "pass", JSON.stringify(result.runs[0]));
+});
+
+test("E2B refuses a Task credential it has no API hosts to carry, before allocation", async () => {
+  let allocations = 0;
+  const runtime = controlledRuntime([], "target-secret");
+  runtime.provider.acquire = async () => {
+    allocations += 1;
+    throw new Error("must not allocate");
+  };
+  const environment = createE2BExecutionEnvironment({
+    apiKey: "e2b-test-key",
+    provider: runtime.provider,
+    guardian: runtime.guardian,
+  });
+  await assert.rejects(environment.execute({
+    capture: { mode: "none" },
+    workspaceArtifactMetadata: false,
+    credentialBindings: [{
+      environmentName: "TARGET_API_KEY",
+      delivery: { kind: "environment" },
+    }],
+    launchPlan: { command: "agent", env: {} },
+  }), (error) => (
+    /^E2B sandboxes receive credentials only through the Guardian; the Suite declares no API hosts to carry TARGET_API_KEY$/
+      .test(error.message)
+    && error.operatorReason === error.message
+  ));
+  assert.equal(allocations, 0);
+});
+
 test("E2B rejects malformed Agent credential routes before provider allocation", async () => {
   let allocations = 0;
   const runtime = controlledRuntime([], "target-secret");
