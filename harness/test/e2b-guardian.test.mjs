@@ -220,7 +220,7 @@ assert confused.response.status_code == 403
 assert confused.request.headers["x-api-key"] == agent_stand_in
 
 # Credentials stay scoped to their own hosts, and a captured exchange whose
-# Host header disagrees with its destination is journaled without a swap.
+# Host header disagrees with its destination is refused before any swap.
 crossed = flow("crossed", "api.example.com", "/v1/chat", {
     "authorization": "Bearer " + agent_stand_in,
 })
@@ -232,9 +232,8 @@ mismatched = flow("mismatched", "api.example.com", "/v1/chat", {
     "authorization": "Bearer " + target_stand_in,
 }, target="api.anthropic.com")
 addon.requestheaders(mismatched)
+assert mismatched.response.status_code == 403
 assert mismatched.request.headers["authorization"] == "Bearer " + target_stand_in
-mismatched.response = Response.make(200)
-addon.response(mismatched)
 
 # A pass-through WebSocket neither counts frames nor truncates the journal.
 socket = flow("socket", "api.anthropic.com", "/v1/realtime", {
@@ -256,7 +255,7 @@ addon.error(failed)
 state = control("seal")
 assert state["sealed"] is True
 assert state["activeFlows"] == 0
-assert state["rowCount"] == 2
+assert state["rowCount"] == 1
 assert state["truncated"] is False
 late = flow("late", "api.anthropic.com", "/v1/messages", {"x-api-key": agent_stand_in})
 addon.requestheaders(late)
@@ -308,10 +307,7 @@ assert addon._passthrough == set()
       const { host, path, statusCode } = JSON.parse(line);
       return { host, path, statusCode };
     }),
-    [
-      { host: "api.example.com", path: "/v1/chat", statusCode: 200 },
-      { host: "api.example.com", path: "/v1/chat", statusCode: 200 },
-    ],
+    [{ host: "api.example.com", path: "/v1/chat", statusCode: 200 }],
   );
 });
 

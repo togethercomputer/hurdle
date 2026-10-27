@@ -28,6 +28,10 @@ const STEP_TIMEOUT_MS = 10 * 60_000;
 const MAX_READ_BYTES = 256 * 1024 * 1024;
 // Sealing and process cleanup after the Agent's own deadline.
 const AGENT_GRACE_MS = 2 * 60_000;
+// Together answers the upgrade once the sandbox has booted. A request it never
+// answers would otherwise hold the run at "Starting sandbox" indefinitely,
+// before the cell's own lifetime starts counting.
+export const CONNECT_TIMEOUT_MS = 3 * 60_000;
 
 function abortError() {
   return Object.assign(new Error("Together socket operation cancelled"), { name: "AbortError" });
@@ -58,7 +62,7 @@ function responseError(response) {
   });
 }
 
-function connect(url, apiKey, caCertificate, signal) {
+function connect(url, apiKey, caCertificate, signal, timeoutMs) {
   const WebSocket = createRequire(import.meta.url)("ws");
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, {
@@ -69,12 +73,21 @@ function connect(url, apiKey, caCertificate, signal) {
       perMessageDeflate: false,
       maxPayload: MAX_FRAME_BYTES,
     });
-    const onAbort = () => { socket.terminate(); reject(abortError()); };
+    let timer = null;
+    const onAbort = () => { clearTimeout(timer); socket.terminate(); reject(abortError()); };
     signal?.addEventListener("abort", onAbort, { once: true });
     const settle = (callback) => (value) => {
+      clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       callback(value);
     };
+    timer = setTimeout(settle(() => {
+      socket.terminate();
+      reject(Object.assign(
+        new Error(`Together did not open a sandbox within ${Math.round(timeoutMs / 1000)}s`),
+        { code: "sandbox_connection_timeout" },
+      ));
+    }), timeoutMs);
     socket.once("open", settle(() => resolve(socket)));
     socket.once("unexpected-response", (_request, response) => {
       responseError(response).then(settle(reject));
@@ -214,13 +227,14 @@ async function upload(resource, root, bytes, name, signal) {
 
 export function createTogetherSocketProvider({
   runUrl = togetherRunUrl, taskRoot = TASK_ROOT, artifactRoot = ARTIFACT_ROOT,
+  connectTimeoutMs = CONNECT_TIMEOUT_MS,
 } = {}) {
   return Object.freeze({
     // The sandbox holds no secrets: credentials reach it only as surrogates the
     // Guardian swaps on egress, never as environment values.
     sealedOnly: true,
     async acquire({ apiKey, caCertificate, signal }) {
-      return createSocketResource(await connect(runUrl(), apiKey, caCertificate, signal));
+      return createSocketResource(await connect(runUrl(), apiKey, caCertificate, signal, connectTimeoutMs));
     },
     async stage(resource, { fixtures, workspaceFiles, signal }) {
       // Inputs are pinned on this host; the sandbox re-verifies each digest.
@@ -240,11 +254,14 @@ export function createTogetherSocketProvider({
       await resource.step({ kind: "stage", fixtures: staged, workspaceFiles: files }, { signal });
     },
     async run(resource, { launchPlan, environment, onStdout, onStderr, signal }) {
-      const { stdin, ...plan } = launchPlan;
+      // The sandbox runs the Agent from these fields alone. The rest of the
+      // plan, its env above all, holds controller-side values that must never
+      // cross the socket; the Agent's environment is `environment`.
+      const { command, args, workspaceLayout, timeoutMs, stdin } = launchPlan;
       const stdinBytes = typeof stdin === "string" ? Buffer.from(stdin) : Buffer.from(stdin ?? new Uint8Array());
       return resource.step({
         kind: "agent",
-        launchPlan: { ...plan, stdinBase64: stdinBytes.toString("base64") },
+        launchPlan: { command, args, workspaceLayout, timeoutMs, stdinBase64: stdinBytes.toString("base64") },
         environment,
       }, {
         signal,

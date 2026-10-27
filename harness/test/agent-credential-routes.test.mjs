@@ -205,3 +205,30 @@ test("well-known Agent credentials get stand-ins even when no route is declared"
   }, entropy);
   assert.deepEqual(declared.map(({ headerNames }) => headerNames), [["x-api-key", "authorization"]]);
 });
+
+test("the workload never receives a value that carries a real Agent credential", () => {
+  const plan = {
+    env: { ANTHROPIC_API_KEY: "sk-ant-api03-real-agent-key" },
+    credentialRoutes: [anthropicRoute("ANTHROPIC_API_KEY")],
+  };
+  const credentials = prepareAgentCredentials(plan, () => "stand-in");
+  // The exact value, and the value embedded in a longer one, are both refused.
+  for (const leaked of ["sk-ant-api03-real-agent-key", "Bearer sk-ant-api03-real-agent-key"]) {
+    assert.throws(
+      () => withAgentCredentialStandIns({ ...plan, env: { ...plan.env, EXTRA: leaked } }, credentials),
+      /would reach the Agent's environment/,
+    );
+  }
+  // A well-known credential that appears only on a later turn has no swap.
+  assert.throws(
+    () => withAgentCredentialStandIns({
+      ...plan,
+      env: { ...plan.env, CODEX_API_KEY: "sk-proj-late-key" },
+    }, credentials),
+    /appeared after the Guardian was prepared/,
+  );
+  assert.equal(
+    withAgentCredentialStandIns(plan, credentials).ANTHROPIC_API_KEY,
+    "sk-ant-api03-stand-in",
+  );
+});

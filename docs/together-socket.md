@@ -44,7 +44,7 @@ any step runs. Failures before the upgrade are plain HTTP: 401 or 403 for the ke
 502 when the sandbox never accepted, 503 when Together has no capacity or no
 image. After the 101, every failure is a WebSocket close.
 
-Hurdle connects to `wss://api.together.ai/v1/compute/experimental/run`;
+Hurdle connects to `wss://hurdle.us.codesandbox.io/v1/compute/experimental/run`;
 `HURDLE_TOGETHER_RUN_URL` points it at another control plane.
 
 ## The wire

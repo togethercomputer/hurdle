@@ -99,10 +99,16 @@ assert public.response is None and public.request.stream is True
 `, { TAE_EGRESS_INTERCEPT_ALL: "1" });
 });
 
-test("the destination floor only applies when every host is intercepted", (t) => {
+test("without intercept-all the Guardian tunnels only to routed hosts on port 443", (t) => {
   runAddon(t, String.raw`
 value = flow("connect-loopback", "127.0.0.1")
 addon.http_connect(value)
-assert value.response is None, "without intercept-all the proxy dials only capture hosts"
+assert refused(value), "a non-routed destination is refused before dialing"
+value = flow("connect-other-port", "api.example.com", port=8443)
+addon.http_connect(value)
+assert refused(value), "a routed host on another port is refused"
+value = flow("connect-routed", "api.example.com")
+addon.http_connect(value)
+assert value.response is None, "a routed host on 443 reaches the policy"
 `, {});
 });

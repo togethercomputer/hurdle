@@ -19,6 +19,7 @@ import {
   certificateHeader,
   createTogetherSocketProvider,
 } from "../lib/execution-environments/together-socket-provider.mjs";
+import { DEFAULT_TOGETHER_RUN_URL, togetherRunUrl } from "../lib/together-api-url.mjs";
 
 const CA = "-----BEGIN CERTIFICATE-----\nMIIBkTCCATegAwIBAgIUdGVzdA==\n-----END CERTIFICATE-----\n";
 
@@ -59,6 +60,15 @@ async function until(predicate) {
   return predicate();
 }
 
+test("runs connect to Together's production Hurdle API unless told otherwise", () => {
+  assert.equal(DEFAULT_TOGETHER_RUN_URL, "wss://hurdle.us.codesandbox.io/v1/compute/experimental/run");
+  assert.equal(togetherRunUrl({}), DEFAULT_TOGETHER_RUN_URL);
+  assert.equal(togetherRunUrl({ HURDLE_TOGETHER_RUN_URL: " ws://127.0.0.1:9/run " }), "ws://127.0.0.1:9/run");
+  for (const url of ["https://hurdle.us.codesandbox.io/v1/compute/experimental/run", "wss://user:pass@example.com/run"]) {
+    assert.throws(() => togetherRunUrl({ HURDLE_TOGETHER_RUN_URL: url }), /must be a ws\(s\) URL/);
+  }
+});
+
 test("the CA crosses the header as its PEM body and is restored in the sandbox", () => {
   assert.equal(certificateHeader(CA), "MIIBkTCCATegAwIBAgIUdGVzdA==");
   assert.equal(certificateFromHeader(certificateHeader(CA)), CA);
@@ -87,6 +97,44 @@ test("Bartender's refusal surfaces its status and code", async (t) => {
   await assert.rejects(acquire(provider), (error) => (
     error.status === 502 && error.code === "sandbox_connection_failed"
   ));
+});
+
+test("a connection Together never answers fails instead of hanging", async (t) => {
+  // Accepts the upgrade request and never replies, as a stalled boot would.
+  const held = new Set();
+  const ended = [];
+  const bartender = http.createServer();
+  bartender.on("upgrade", (_request, socket) => {
+    held.add(socket);
+    socket.on("error", () => {});
+    socket.once("end", () => ended.push(socket));
+  });
+  await new Promise((ready) => bartender.listen(0, "127.0.0.1", ready));
+  t.after(() => {
+    for (const socket of held) socket.destroy();
+    bartender.close();
+  });
+  const provider = createTogetherSocketProvider({
+    runUrl: () => `ws://127.0.0.1:${bartender.address().port}/v1/compute/experimental/run`,
+    connectTimeoutMs: 200,
+  });
+  const started = Date.now();
+  await assert.rejects(acquire(provider), (error) => (
+    error.code === "sandbox_connection_timeout" && /did not open a sandbox/.test(error.message)
+  ));
+  assert.ok(Date.now() - started < 5_000);
+  // The abandoned request is closed, so it cannot keep a sandbox waiting.
+  await new Promise((done) => setTimeout(done, 100));
+  assert.equal(ended.length, 1);
+
+  // Cancelling while connecting still wins over the timeout.
+  const cancelling = createTogetherSocketProvider({
+    runUrl: () => `ws://127.0.0.1:${bartender.address().port}/v1/compute/experimental/run`,
+    connectTimeoutMs: 60_000,
+  });
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 50);
+  await assert.rejects(acquire(cancelling, controller.signal), (error) => error.name === "AbortError");
 });
 
 test("stage uploads pinned inputs and runs the stage step against them", async (t) => {
@@ -138,6 +186,32 @@ test("the agent step streams its output and returns the process facts", async (t
   assert.equal(stdout, "hello world");
   assert.equal(stderr, "warn");
   assert.deepEqual(h.jobs[0].environment, { A: "1" });
+});
+
+test("only what the sandbox runs crosses the socket, never the plan's own env", async (t) => {
+  const real = "sk-ant-api03-REAL-VALUE-THAT-MUST-STAY-ON-THE-CONTROLLER";
+  const h = await harness(t, async () => ({ exitCode: 0, quiescent: true, timedOut: false }));
+  const resource = await acquire(h.provider);
+  t.after(() => resource.close());
+  const workspaceLayout = { workingDirectory: "/workspace" };
+  await h.provider.run(resource, {
+    launchPlan: {
+      command: "agent",
+      args: ["--print"],
+      workspaceLayout,
+      timeoutMs: 1000,
+      stdin: "go",
+      env: { ANTHROPIC_API_KEY: real, PATH: "/usr/bin" },
+      credentialRoutes: [{ environmentName: "ANTHROPIC_API_KEY", hosts: ["api.anthropic.com"], headerNames: ["x-api-key"] }],
+      workspaceFiles: [],
+    },
+    environment: { ANTHROPIC_API_KEY: "sk-ant-api03-stand-in" },
+  });
+  const [job] = h.jobs.filter((value) => value.kind === "agent");
+  assert.deepEqual(Object.keys(job.launchPlan).sort(), ["args", "command", "stdinBase64", "timeoutMs", "workspaceLayout"]);
+  assert.deepEqual(job.launchPlan.workspaceLayout, workspaceLayout);
+  assert.deepEqual(job.environment, { ANTHROPIC_API_KEY: "sk-ant-api03-stand-in" });
+  assert.ok(!JSON.stringify(job).includes(real));
 });
 
 test("a failing step rejects without ending the connection", async (t) => {

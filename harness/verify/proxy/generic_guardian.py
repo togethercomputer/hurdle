@@ -9,7 +9,6 @@ within a separate, non-truncating budget.
 from __future__ import annotations
 
 import datetime
-import functools
 import gzip
 import hashlib
 import io
@@ -83,6 +82,8 @@ PASSTHROUGH_HOSTS = frozenset(
 )
 if CAPTURE_HOSTS & PASSTHROUGH_HOSTS:
     raise RuntimeError("capture and pass-through hosts overlap")
+# Without intercept-all, these are the only destinations the Guardian dials.
+ROUTED_HOSTS = CAPTURE_HOSTS | PASSTHROUGH_HOSTS
 SUBSTITUTIONS = tuple(json.loads(os.environ.get("TAE_EGRESS_SUBSTITUTIONS", "[]")))
 # Hosts a real credential may be sent to. A request whose Host header names one
 # must also be tunnelled to it, or the Guardian refuses it.
@@ -341,9 +342,62 @@ EXCHANGE_FACTS = _load_exchange_facts()
 
 # Public by every other measure, yet a cloud metadata service.
 _NON_GLOBAL_EXCEPTIONS = (ipaddress.ip_network("168.63.129.16/32"),)
+# IPv6 addresses that stand for an IPv4 address. A NAT64 gateway or the host
+# itself would reach the IPv4 address they carry, so they are judged by it.
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_LOCAL_NAT64 = ipaddress.ip_network("64:ff9b:1::/48")
+_IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
+_AUTHORITY = re.compile(r"[A-Za-z0-9._:\[\]-]+")
 
 
-@functools.lru_cache(maxsize=1024)
+def _resolve(host: str):
+    return socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+
+
+def _non_global_address(address: ipaddress._BaseAddress) -> bool:
+    if address.version == 6:
+        if address in _LOCAL_NAT64:
+            return True
+        carried = address.ipv4_mapped or address.sixtofour
+        if carried is None and (address in _NAT64 or address in _IPV4_COMPATIBLE):
+            carried = ipaddress.IPv4Address(int(address) & 0xFFFF_FFFF)
+        if carried is not None and _non_global_address(carried):
+            return True
+    return not address.is_global or any(address in network for network in _NON_GLOBAL_EXCEPTIONS)
+
+
+def _addresses(host: str) -> list:
+    """Every address a destination names, in the resolver's order; raises
+    OSError when it does not resolve."""
+    host = (host or "").strip().lower().rstrip(".").strip("[]")
+    try:
+        return [ipaddress.ip_address(host)]
+    except ValueError:
+        pass
+    ordered: list = []
+    for family, _, _, _, sockaddr in _resolve(host):
+        if family not in (socket.AF_INET, socket.AF_INET6):
+            continue
+        address = ipaddress.ip_address(sockaddr[0])
+        if address not in ordered:
+            ordered.append(address)
+    return ordered
+
+
+def _authority(value: str) -> tuple[str, int | None] | None:
+    """The host and port an authority or Host header names; None when malformed."""
+    if not _AUTHORITY.fullmatch(value):
+        return None
+    try:
+        parts = urlsplit("//" + value)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.username is not None or parts.path or not parts.hostname:
+        return None
+    return parts.hostname.rstrip("."), port
+
+
 def _non_global_destination(host: str) -> bool:
     """True when the host names a non-public address.
 
@@ -351,27 +405,16 @@ def _non_global_destination(host: str) -> bool:
     controller machine, so an agent must not reach that machine's loopback,
     its network or a cloud metadata service through it. A name that does not
     resolve is left to fail on its own; that keeps reserved control and
-    preflight names working.
+    preflight names working. This is an early refusal only: server_connect
+    checks and pins the address that is actually dialled.
     """
-    host = (host or "").strip().lower().rstrip(".").strip("[]")
-    if not host:
+    if not (host or "").strip():
         return False
     try:
-        addresses = {ipaddress.ip_address(host)}
-    except ValueError:
-        try:
-            answers = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-        except (OSError, UnicodeError):
-            return False
-        addresses = {
-            ipaddress.ip_address(sockaddr[0])
-            for family, _, _, _, sockaddr in answers
-            if family in (socket.AF_INET, socket.AF_INET6)
-        }
-    return any(
-        not address.is_global or any(address in network for network in _NON_GLOBAL_EXCEPTIONS)
-        for address in addresses
-    )
+        addresses = _addresses(host)
+    except (OSError, UnicodeError):
+        return False
+    return any(_non_global_address(address) for address in addresses)
 
 
 class GenericGuardian:
@@ -391,6 +434,12 @@ class GenericGuardian:
         self._observed_websockets: dict[str, dict[str, int]] = {}
         self._websockets: dict[str, dict[str, int]] = {}
         self._passthrough: set[str] = set()
+        # Server connection id -> (the name server_connect checked and pinned,
+        # the client connection it serves). A tunnel's requests keep naming its
+        # first server connection after a reconnect, so a pin lasts as long as
+        # the client connection, not the server connection.
+        self._pinned: dict[str, tuple[str, object]] = {}
+        self._client_pins: dict[object, set[str]] = {}
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         with open(LOG_PATH, "xb"):
             pass
@@ -438,29 +487,25 @@ class GenericGuardian:
         flow.response = http.Response.make(200, body, {"content-type": "application/json"})
         return True
 
-    @staticmethod
-    def _routes_to_host(flow: http.HTTPFlow, host: str) -> bool:
+    def _routes_to_host(self, flow: http.HTTPFlow, host: str) -> bool:
         # Inside a CONNECT tunnel, request.host is the tunnel destination while
         # pretty_host prefers the Host header. Swapping in a credential when
         # they differ would send it to a different upstream than its route.
-        target = str(getattr(flow.request, "host", None) or host).lower().rstrip(".")
-        return target == host
+        return self._destination(flow) == host
 
-    @classmethod
-    def _may_substitute(cls, flow: http.HTTPFlow, host: str) -> bool:
+    def _may_substitute(self, flow: http.HTTPFlow, host: str) -> bool:
         # Every credential swap needs HTTPS to the default port and a Host
         # header that names the tunnel destination.
         return (
             (flow.request.scheme or "").lower() == "https"
             and getattr(flow.request, "port", 443) == 443
-            and cls._routes_to_host(flow, host)
+            and self._routes_to_host(flow, host)
         )
 
-    @classmethod
-    def _substitute(cls, flow: http.HTTPFlow, host: str) -> None:
+    def _substitute(self, flow: http.HTTPFlow, host: str) -> None:
         # The single place a surrogate becomes a real value; every route
         # passes through the same guard.
-        if not cls._may_substitute(flow, host):
+        if not self._may_substitute(flow, host):
             return
         for binding in SUBSTITUTIONS:
             if host not in binding.get("hosts", []):
@@ -474,21 +519,90 @@ class GenericGuardian:
                 if current is not None and surrogate in current:
                     flow.request.headers[header_name] = current.replace(surrogate, value)
 
+    def _destination(self, flow: http.HTTPFlow) -> str:
+        # Where mitmproxy actually connects: the CONNECT target or the URL's
+        # host. pretty_host prefers the Host header, which the client controls.
+        # Inside a tunnel whose connection server_connect pinned to an address,
+        # mitmproxy reports that address; map it back to the name it checked.
+        request = flow.request
+        destination = str(getattr(request, "host", None) or request.pretty_host or "").lower().rstrip(".")
+        server = getattr(flow, "server_conn", None)
+        pinned = self._pinned.get(getattr(server, "id", None)) if server is not None else None
+        address = getattr(server, "address", None) if server is not None else None
+        if pinned and address and destination == str(address[0]).lower():
+            return pinned[0]
+        return destination
+
+    def _names_destination(self, flow: http.HTTPFlow, destination: str) -> bool:
+        # Policy, evidence and swaps key on the host a request names, so every
+        # name it carries must be the host it is actually sent to: the Host
+        # header mitmproxy prefers, every Host header an upstream might read,
+        # and an absolute-form or HTTP/2 authority, which an upstream that
+        # routes by it (a CDN, say) would follow instead of the Host header.
+        request = flow.request
+        if (request.pretty_host or "").lower().rstrip(".") != destination:
+            return False
+        headers = request.headers
+        get_all = getattr(headers, "get_all", None)
+        names = list(get_all("host")) if get_all else [value for value in [headers.get("host")] if value is not None]
+        authority = getattr(request, "authority", "") or ""
+        if authority:
+            names.append(authority)
+        port = getattr(request, "port", 443)
+        for value in names:
+            named = _authority(str(value))
+            if named is None or named[0] != destination or named[1] not in (None, port):
+                return False
+        return True
+
+    def _refuse_on_failure(self, flow: http.HTTPFlow) -> None:
+        # A check that fails unexpectedly must refuse the request; mitmproxy
+        # would otherwise log the error and send the request on unchecked.
+        self._passthrough.discard(flow.id)
+        self._observed.pop(flow.id, None)
+        if self._started.pop(flow.id, None) is not None:
+            self.active = max(0, self.active - 1)
+        flow.request.stream = False
+        flow.response = http.Response.make(403, b"guardian check failed")
+
     def http_connect(self, flow: http.HTTPFlow) -> None:
-        host = (flow.request.pretty_host or "").lower().rstrip(".")
-        # Answer the transport preflight here instead of dialing upstream.
-        if host == PREFLIGHT_HOST:
-            flow.response = http.Response.make(200)
+        try:
+            self._check_connect(flow)
+        except Exception:
+            self._refuse_on_failure(flow)
+
+    def _check_connect(self, flow: http.HTTPFlow) -> None:
+        destination = self._destination(flow)
         # A CONNECT names its destination before any upstream connection or
         # TLS handshake; refusing here keeps the proxy from dialing at all.
-        elif INTERCEPT_ALL and _non_global_destination(host):
-            flow.response = http.Response.make(403, b"destination is not a public address")
+        if not self._names_destination(flow, destination):
+            flow.response = http.Response.make(403, b"host does not match destination")
+        # Answer the transport preflight here instead of dialing upstream.
+        elif destination == PREFLIGHT_HOST:
+            flow.response = http.Response.make(200)
+        elif getattr(flow.request, "port", 443) != 443:
+            flow.response = http.Response.make(403, b"only port 443 may be tunnelled")
+        elif INTERCEPT_ALL:
+            if _non_global_destination(destination):
+                flow.response = http.Response.make(403, b"destination is not a public address")
+        elif destination not in ROUTED_HOSTS:
+            flow.response = http.Response.make(403, b"destination is not routed")
 
     def requestheaders(self, flow: http.HTTPFlow) -> None:
+        try:
+            self._check_request(flow)
+        except Exception:
+            self._refuse_on_failure(flow)
+
+    def _check_request(self, flow: http.HTTPFlow) -> None:
         if self._control(flow):
             return
-        host = (flow.request.pretty_host or "").lower().rstrip(".")
-        if INTERCEPT_ALL and _non_global_destination(host):
+        destination = self._destination(flow)
+        if not self._names_destination(flow, destination):
+            flow.response = http.Response.make(403, b"host does not match destination")
+            return
+        host = destination
+        if INTERCEPT_ALL and _non_global_destination(destination):
             # Absolute-form plaintext requests never pass through http_connect.
             flow.response = http.Response.make(403, b"destination is not a public address")
             return
@@ -524,11 +638,12 @@ class GenericGuardian:
         if self.sealed:
             flow.response = http.Response.make(503, b"capture sealed")
             return
-        if INTERCEPT_ALL and (
-            (flow.request.scheme or "").lower() != "https" or flow.request.port != 443
+        if (
+            (flow.request.scheme or "").lower() != "https"
+            or getattr(flow.request, "port", 443) != 443
         ):
             # Real credentials are substituted for capture hosts; never send
-            # them over plaintext or to an unexpected port.
+            # them over plaintext or to an unexpected port, in any mode.
             flow.response = http.Response.make(403, b"capture route requires https")
             return
         method = flow.request.method.upper()
@@ -555,6 +670,66 @@ class GenericGuardian:
         self._substitute(flow, host)
         self.active += 1
         self._started[flow.id] = time.monotonic()
+
+    def server_connect(self, data) -> None:
+        try:
+            self._pin(data)
+        except Exception:
+            # Never let a connection go ahead unchecked.
+            self._unpin(data.server)
+            data.server.error = "destination check failed"
+
+    def _pin(self, data) -> None:
+        # The checks above see names. Resolve the name once here, refuse any
+        # non-public answer, and pin the connection to the address that was
+        # checked, so a DNS answer that changes in between (rebinding) cannot
+        # move the connection. TLS keeps the original name for SNI and for
+        # certificate verification. A reconnect inside a pinned tunnel dials
+        # the pinned address again and keeps the tunnel's SNI.
+        server = data.server
+        address = getattr(server, "address", None)
+        if not address:
+            return
+        name, port = str(address[0]), address[1]
+        try:
+            addresses = _addresses(name)
+        except (OSError, UnicodeError):
+            server.error = "destination did not resolve"
+            return
+        if not addresses or any(_non_global_address(value) for value in addresses):
+            server.error = "destination is not a public address"
+            return
+        literal = name.strip("[]")
+        try:
+            ipaddress.ip_address(literal)
+        except ValueError:
+            checked = name.lower().rstrip(".")
+            # Upstream TLS sends and verifies the checked name, never the
+            # client's own SNI.
+            server.sni = checked
+            client = getattr(getattr(data, "client", None), "id", None)
+            self._pinned[server.id] = (checked, client)
+            self._client_pins.setdefault(client, set()).add(server.id)
+        # The resolver's first answer, as an unpinned connection would dial.
+        server.address = (str(addresses[0]), port)
+
+    def _unpin(self, server) -> None:
+        server_id = getattr(server, "id", None)
+        pinned = self._pinned.pop(server_id, None)
+        if pinned is None:
+            return
+        pins = self._client_pins.get(pinned[1])
+        if pins is not None:
+            pins.discard(server_id)
+            if not pins:
+                del self._client_pins[pinned[1]]
+
+    def server_connect_error(self, data) -> None:
+        self._unpin(data.server)
+
+    def client_disconnected(self, client) -> None:
+        for server_id in self._client_pins.pop(getattr(client, "id", None), ()):
+            self._pinned.pop(server_id, None)
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         # Model responses are long server-sent event streams, and observed

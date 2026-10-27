@@ -140,6 +140,17 @@ export function withAgentCredentialStandIns(launchPlan, agentCredentials) {
       throw new TypeError("Agent credential routes changed after the Guardian was prepared");
     }
   }
+  // A well-known credential that first appears on a later turn has no
+  // Guardian swap behind it, so it would reach the workload as a real value.
+  for (const name of Object.keys(DEFAULT_AGENT_CREDENTIAL_ROUTES)) {
+    if (
+      typeof env[name] === "string"
+      && env[name].trim()
+      && !prepared.has(name)
+    ) {
+      throw new TypeError("Agent credential appeared after the Guardian was prepared");
+    }
+  }
   for (const credential of agentCredentials) {
     if (!Object.hasOwn(env, credential.environmentName)) continue;
     if (env[credential.environmentName] !== credential.value) {
@@ -147,8 +158,10 @@ export function withAgentCredentialStandIns(launchPlan, agentCredentials) {
     }
     env[credential.environmentName] = credential.surrogate;
   }
-  const realValues = new Set(agentCredentials.map(({ value }) => value));
-  if (Object.values(env).some((value) => realValues.has(value))) {
+  // Refuse any value that carries a real credential, not only an exact copy:
+  // "Bearer <key>" or a key embedded in a URL is just as exposed.
+  const realValues = agentCredentials.map(({ value }) => value);
+  if (Object.values(env).some((value) => realValues.some((real) => String(value).includes(real)))) {
     throw new TypeError("A routed Agent credential would reach the Agent's environment");
   }
   return env;
