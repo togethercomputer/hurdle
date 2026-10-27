@@ -424,7 +424,13 @@ test("Together starter requires trusted traffic and rejects missing evidence and
   };
   assert.ok(evaluateChecks(checks, input).checks.every(c => c.outcome === "pass"));
   assert.equal(evaluateChecks(checks, { ...input, egress: [] }).checks.find(c => c.id === "chat-completion").outcome, "skip");
-  assert.equal(evaluateChecks(checks, { ...input, egress: [{ ...input.egress[0], requests: [...input.egress[0].requests, request] }] }).checks.find(c => c.id === "one-completion").outcome, "fail");
+  const completionOutcome = (...statuses) => evaluateChecks(checks, { ...input, egress: [{ ...input.egress[0], requests: [input.egress[0].requests[0], ...statuses.map(statusCode => ({ ...request, statusCode }))] }] }).checks.find(c => c.id === "one-completion").outcome;
+  // One retry is allowed after a timeout (no status) or a 5xx, and only before the success.
+  assert.equal(completionOutcome(503, 200), "pass");
+  assert.equal(completionOutcome(null, 200), "pass");
+  for (const statuses of [[200, 200], [400, 200], [429, 200], [503, 503, 200], [null, null, 200], [200, 503], [503], []]) {
+    assert.equal(completionOutcome(...statuses), "fail", `completion statuses ${JSON.stringify(statuses)}`);
+  }
   assert.equal(evaluateChecks(checks, { ...input, readArtifactText: () => ({ status: "missing" }) }).checks.find(c => c.id === "completion-shape").outcome, "fail");
   for (const invalid of [{}, { choices: [{ message: { content: "" } }], usage: { total_tokens: 20 } }, { ...completion, usage: { total_tokens: 0 } }]) {
     assert.equal(evaluateChecks(checks, { ...input, readArtifactText: () => ({ status: "present", text: JSON.stringify(invalid) }) }).checks.find(c => c.id === "completion-shape").outcome, "fail");

@@ -46,9 +46,11 @@ Guardian on both E2B and Together. See
 [where credentials live](../../docs/sandbox-setup.md#where-credentials-live).
 
 The prompt instructs the Agent to make one model-list call and one completion
-call with at most 32 generated tokens and no retries. Those instructions are not
+call with at most 32 generated tokens. A request that times out or returns HTTP
+5xx may be retried once; any HTTP 4xx stops the run. Those instructions are not
 a hard spending cap: the Agent could make additional calls. A required code
-check rejects extra completion attempts after execution.
+check allows exactly one successful completion, after at most one retried
+timeout or 5xx, and rejects any other completion attempt after execution.
 
 The fixture uses the serverless `Qwen/Qwen3.5-9B` model with reasoning turned
 off, so the 32-token reply contains text rather than only reasoning tokens. Edit
@@ -65,5 +67,7 @@ metadata proves
 the requests occurred, but does not prove the exact request body or response
 contents. Artifacts remain Agent-produced evidence.
 
-API references: [model catalog](https://docs.together.ai/reference/models) and
-[chat completions](https://docs.together.ai/reference/chat-completions).
+API reference: [chat completions](https://docs.together.ai/reference/chat-completions).
+Together's API reference does not cover `GET /v1/models`. It returns a bare
+JSON array of model objects, each with an `id`, rather than OpenAI's
+`{ "data": [...] }`, so the prompt states that shape.
