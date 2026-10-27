@@ -426,6 +426,7 @@ test("the CLI previews the showcase denominator and billable services before exe
     output,
     /^  Access\s+Target API credentials available to Agent$/m,
   );
+  assert.match(output, /^  Keys\s+[A-Z0-9_]+ → the Agent's environment$/m);
   assert.ok(events.findIndex(([kind]) => kind === "stdout") < events.findIndex(([kind]) => kind === "store"));
   assert.ok(events.findIndex(([kind]) => kind === "stdout") < events.findIndex(([kind]) => kind === "execute"));
 });

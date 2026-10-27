@@ -48,7 +48,7 @@ import { discoverModels, selectCatalogModels, ModelDiscoveryError } from "../lib
 import {
   terminalUsesColor, paintTerminal as paintRunOutput, terminalFact as runFact,
   terminalHeader, terminalMark, terminalStatus, terminalNote, terminalNext, suiteCommand, quoteCommandArgument, cliExecutable,
-  runtimeSummaryRows,
+  runtimeSummaryRows, suiteKeyRoutes, suiteKeyRows,
 } from "../lib/terminal-output.mjs";
 
 const FIRST_PARTY_AGENT_ADAPTERS = Object.freeze({
@@ -1371,16 +1371,13 @@ async function runCliMain(argv, io, dependencies) {
     const selectedCredentialNames = new Set(selectedTaskIds.flatMap((taskId) => (
       resolvedPlan.value.definition.tasks[taskId].credentialRequirements
     )));
-    const agentVisibleCredentialNames = new Set(selectedTaskIds.flatMap((taskId) => {
-      const task = resolvedPlan.value.definition.tasks[taskId];
-      return task.credentialRequirements.filter((name) => (
-        task.credentialDeliveryOverrides?.[name]
-          ?? resolvedPlan.value.definition.credentialRequirements[name]?.delivery
-          ?? { kind: "environment" }
-      ).kind === "environment");
-    }));
+    const keyRoutes = suiteKeyRoutes(resolvedPlan.value.definition, selectedTaskIds, runtimeProfile.environment);
+    const agentVisibleCredentialNames = new Set(keyRoutes.filter(({ agentVisible }) => agentVisible).map(({ name }) => name));
     if (validation) {
-      for (const [label, value] of runtimeSummaryRows(runtimeProfile, io.cwd, { inline: options.explicitTopology.size > 0 })) {
+      for (const [label, value] of [
+        ...runtimeSummaryRows(runtimeProfile, io.cwd, { inline: options.explicitTopology.size > 0 }),
+        ...suiteKeyRows(keyRoutes),
+      ]) {
         io.stdout.write(runFact(label, value, { useColor: runOutputUsesColor(io) }));
       }
     }
@@ -1453,7 +1450,8 @@ async function runCliMain(argv, io, dependencies) {
         + runtimeSummaryRows(runtimeProfile, io.cwd, { inline: options.explicitTopology.size > 0 }).map(([label, value]) => planFact(label, value)).join("")
         + planFact("Concurrency", String(options.concurrency))
         + planFact("Scoring", scoringLabel(authorities))
-        + planFact("Usage", `${serviceText} may be billed`),
+        + planFact("Usage", `${serviceText} may be billed`)
+        + suiteKeyRows(keyRoutes).map(([label, value]) => planFact(label, value)).join(""),
       );
       if (agentVisibleCredentialNames.size > 0) {
         io.stdout.write(

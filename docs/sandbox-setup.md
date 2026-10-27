@@ -153,7 +153,9 @@ The table shows where each real credential is held. Where it says Guardian
 only, the Agent receives a random stand-in value and the Guardian swaps in the
 real key only on HTTPS requests to that key's own hosts, after TLS verification,
 and only when the request's Host header names the host the connection actually
-reaches; a stand-in the Agent prints or sends elsewhere is useless. On E2B the
+reaches; a stand-in the Agent prints or sends elsewhere is useless. The Agent
+can still use the key on those hosts, for any request; see
+[credentials and safety](./authoring.md#credentials-and-safety). On E2B the
 Guardian is a separate VM; on Together it is a process on the machine running
 Hurdle. Anything held in the Agent VM or Agent process can be read by Agent code
 and by anything a prompt persuades the Agent to run.

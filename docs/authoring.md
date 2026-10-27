@@ -345,6 +345,20 @@ framework redacts known credentials from newly captured evidence, but you should
 still avoid asking Agents to print secrets and review results before sharing
 them.
 
+A Suite is code you run. The Suite file, `checks.mjs` and `guard.mjs` run on
+your machine, inside Hurdle, with the same access to your environment and
+`.env.local` as any script you start. A sandbox isolates the Agent, not the
+Suite, so run only Suites you trust. Before anything starts, `hurdle validate`
+and `hurdle run` list each Suite key and where it can go.
+
+The Agent can use a key it cannot read. In a sandbox, the Guardian adds the
+Suite's key to every HTTPS request the Agent sends to `api.hosts`, whatever the
+method or path. That includes requests that keep costing money after the run,
+such as batch jobs, fine-tunes and dedicated endpoints, and requests that delete
+data. The Agent's own model key works the same way on its provider's hosts.
+Give evals a dedicated key with a low balance, and block costly or destructive
+requests in [`guard.mjs`](#block-an-expensive-or-destructive-request).
+
 Local runs execute Agent code on the host and are not a security sandbox. Use
 a Runtime configured for E2B or Together sandbox for isolation and trusted
 HTTP/tool evidence.
