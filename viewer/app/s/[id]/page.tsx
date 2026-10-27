@@ -531,7 +531,9 @@ export default async function SessionPage({
   const evaluatorSources = canonicalEvaluatorSources(dbSessionRecord.evaluatorSources);
   const storedDeterministicOverall = canonicalDeterministicOverall(dbSessionRecord.deterministicEffectiveVerdict);
   const reviewCount = storedChecks.length + (canonicalJudge ? 1 : 0);
-  const evidenceCount = 1 + (togetherRequests.length > 0 ? 1 : 0) + (toolsUsed.length > 0 ? 1 : 0);
+  // Agent traffic is hidden unless Viewer settings show it, so count the task calls.
+  const hasTaskRequests = togetherRequests.some((row) => row.scope !== "agent");
+  const evidenceCount = 1 + (hasTaskRequests ? 1 : 0) + (toolsUsed.length > 0 ? 1 : 0);
 
   return (
     <ResizableSessionShell messages={session.messages} initialRailWidth={sidebarLayout.width} initialRailCollapsed={sidebarLayout.collapsed}>

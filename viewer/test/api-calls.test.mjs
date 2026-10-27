@@ -9,12 +9,13 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
 import { apiCallScope, splitApiCalls, summarizeApiCalls, taskApiHosts } from "../lib/api-calls.mjs";
+import { readShowAgentTraffic, SHOW_AGENT_TRAFFIC_KEY, subscribeViewerSettings, writeShowAgentTraffic } from "../lib/viewer-settings.mjs";
 
 const require = createRequire(import.meta.url);
 const viewerRoot = fileURLToPath(new URL("..", import.meta.url));
 
 // Transpiles a Viewer TypeScript module and its "@/" imports for a test render.
-async function loadViewerModule(path) {
+async function loadViewerModule(path, overrides = {}) {
   const source = readFileSync(path, "utf8");
   let code = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.ESNext, jsx: ts.JsxEmit.ReactJSX },
@@ -22,10 +23,12 @@ async function loadViewerModule(path) {
   const specifiers = [...new Set([...code.matchAll(/from "([^"]+)"/g)].map(([, name]) => name))];
   for (const name of specifiers) {
     let target;
-    if (name.startsWith("@/") || name.startsWith(".")) {
+    if (Object.hasOwn(overrides, name)) {
+      target = overrides[name];
+    } else if (name.startsWith("@/") || name.startsWith(".")) {
       const base = name.startsWith("@/") ? resolve(viewerRoot, name.slice(2)) : resolve(dirname(path), name);
       const file = [base, `${base}.tsx`, `${base}.ts`].find((candidate) => existsSync(candidate) && !candidate.endsWith("/"));
-      target = /\.tsx?$/.test(file) ? await loadViewerModule(file) : pathToFileURL(file).href;
+      target = /\.tsx?$/.test(file) ? await loadViewerModule(file, overrides) : pathToFileURL(file).href;
     } else {
       target = pathToFileURL(require.resolve(name)).href;
     }
@@ -34,8 +37,14 @@ async function loadViewerModule(path) {
   return `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
 }
 
-const { TogetherRequestsCard } = await import(await loadViewerModule(resolve(viewerRoot, "components/TogetherRequestsCard.tsx")));
-const render = (props) => renderToStaticMarkup(React.createElement(TogetherRequestsCard, props));
+const cardPath = resolve(viewerRoot, "components/TogetherRequestsCard.tsx");
+// The real gate renders on the server with the setting off, as on a first page load.
+const card = await import(await loadViewerModule(cardPath));
+// The same card with the gate open, as when "Show agent traffic" is on.
+const shown = await import(await loadViewerModule(cardPath, {
+  "@/components/AgentTrafficGate": `data:text/javascript,${encodeURIComponent("export function AgentTrafficGate({ children }) { return children; }")}`,
+}));
+const render = (props, module = card) => renderToStaticMarkup(React.createElement(module.TogetherRequestsCard, props));
 
 const row = (host, path, status, extra = {}) => ({ method: "GET", host, path, status, ...extra });
 // A Together run: the task's two calls plus Claude Code's own traffic.
@@ -67,42 +76,86 @@ test("API calls are task calls only on the Suite's API hosts", () => {
   ]), { calls: 5, blocked: 1, failed: 2 });
 });
 
-test("the card counts only task calls and collapses the Agent's own traffic", () => {
+test("by default the card shows only task calls, counted without the Agent's traffic", () => {
   const html = render({ requests: togetherRun });
-  assert.match(html, /<h2[^>]*>Task API calls<\/h2>/);
+  assert.match(html, /<h2[^>]*>Captured API calls<\/h2>/);
+  assert.match(html, />2 calls</);
+  // The Agent's 404 and missing statuses don't count as non-2xx.
+  assert.doesNotMatch(html, /non-2xx|blocked/);
+  assert.doesNotMatch(html, /Agent traffic|<details|anthropic|datadoghq/);
+
+  // A failing task call still counts and shows as a failure.
+  const failing = render({ requests: [...togetherRun, row("api.together.ai", "/v1/chat/completions", 500, { scope: "task" })] });
+  assert.match(failing, /3 calls<span class="text-fail"> · 1 non-2xx/);
+
+  // With no task calls, the card is only Agent traffic, so it stays hidden.
+  assert.equal(render({ requests: togetherRun.filter((call) => call.scope === "agent") }), "");
+});
+
+test("with Show agent traffic on, the Agent's calls appear collapsed and uncounted", () => {
+  const html = render({ requests: togetherRun }, shown);
   const header = html.slice(0, html.indexOf("<table"));
   assert.match(header, />2 calls</);
   assert.doesNotMatch(header, /non-2xx|blocked/);
   assert.match(html, /<details class="group [^"]*"><summary/, "Agent traffic starts collapsed");
-  assert.match(html, /Agent traffic/);
   const agentSection = html.slice(html.indexOf("<details"));
+  assert.match(agentSection, /Agent traffic/);
   assert.match(agentSection, />3 calls</);
   assert.match(agentSection, /api\.anthropic\.com/);
   assert.doesNotMatch(agentSection, /text-fail|bg-fail|text-pass/, "Agent traffic has no pass or failure styling");
-  const taskSection = html.slice(0, html.indexOf("<details"));
-  assert.doesNotMatch(taskSection, /anthropic|datadoghq/);
+  assert.doesNotMatch(html.slice(0, html.indexOf("<details")), /anthropic|datadoghq/);
 
-  // A failing task call still counts and shows as a failure.
-  const failing = render({ requests: [...togetherRun, row("api.together.ai", "/v1/chat/completions", 500, { scope: "task" })] });
-  assert.match(failing.slice(0, failing.indexOf("<table")), /3 calls<span class="text-fail"> · 1 non-2xx/);
-
-  const agentOnly = render({ requests: togetherRun.filter((call) => call.scope === "agent"), agentTruncated: true });
+  const agentOnly = render({ requests: togetherRun.filter((call) => call.scope === "agent"), agentTruncated: true }, shown);
   assert.match(agentOnly, />0 calls</);
   assert.match(agentOnly, /No calls to the Suite&#x27;s API hosts\./);
   assert.match(agentOnly, />3\+ calls</);
 });
 
-test("a run with only task calls looks as before", () => {
+test("a run with only task calls looks as before, whatever the setting", () => {
   const e2b = [
     row("api.together.ai", "/v1/models", 200, { scope: "task" }),
     row("api.together.ai", "/v1/chat/completions", 429, { scope: "task" }),
     row("api.together.ai", "/v1/compute/clusters", 403, { scope: "task", disposition: "blocked" }),
   ];
-  for (const requests of [e2b, e2b.map(({ scope, ...call }) => call)]) {
-    const html = render({ requests, truncated: true });
-    assert.match(html, /<h2[^>]*>Captured API calls<\/h2>/);
-    assert.match(html, /3\+ calls<span class="text-warn"> · 1 blocked<\/span><span class="text-fail"> · 1 non-2xx<\/span>/);
-    assert.doesNotMatch(html, /<details|Agent traffic/);
+  for (const module of [card, shown]) {
+    for (const requests of [e2b, e2b.map(({ scope, ...call }) => call)]) {
+      const html = render({ requests, truncated: true }, module);
+      assert.match(html, /<h2[^>]*>Captured API calls<\/h2>/);
+      assert.match(html, /3\+ calls<span class="text-warn"> · 1 blocked<\/span><span class="text-fail"> · 1 non-2xx<\/span>/);
+      assert.doesNotMatch(html, /<details|Agent traffic/);
+    }
+    assert.equal(render({ requests: [] }, module), "");
   }
-  assert.equal(render({ requests: [] }), "");
+});
+
+test("Show agent traffic is off until this browser turns it on", () => {
+  const storage = () => {
+    const values = new Map();
+    return { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), values };
+  };
+  const saved = storage();
+  assert.equal(readShowAgentTraffic(saved), false);
+
+  const target = new EventTarget();
+  let changes = 0;
+  const unsubscribe = subscribeViewerSettings(target, () => { changes += 1; });
+  writeShowAgentTraffic(saved, true, target);
+  assert.equal(saved.values.get(SHOW_AGENT_TRAFFIC_KEY), "true");
+  assert.equal(readShowAgentTraffic(saved), true);
+  // Another tab's change arrives as a storage event.
+  target.dispatchEvent(new Event("storage"));
+  writeShowAgentTraffic(saved, false, target);
+  assert.equal(readShowAgentTraffic(saved), false);
+  assert.equal(changes, 3);
+  unsubscribe();
+  writeShowAgentTraffic(saved, true, target);
+  assert.equal(changes, 3);
+
+  // Blocked or broken storage reads as off, and a toggle still updates the page.
+  const blocked = { getItem() { throw new Error("blocked"); }, setItem() { throw new Error("blocked"); } };
+  assert.equal(readShowAgentTraffic(blocked), false);
+  subscribeViewerSettings(target, () => { changes += 1; });
+  writeShowAgentTraffic(blocked, true, target);
+  assert.equal(changes, 4);
+  assert.equal(readShowAgentTraffic({ getItem: () => "yes", setItem() {} }), false);
 });

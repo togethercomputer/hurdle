@@ -1,4 +1,6 @@
+import type { ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
+import { AgentTrafficGate } from "@/components/AgentTrafficGate";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { isOkStatus, splitApiCalls, summarizeApiCalls } from "@/lib/api-calls.mjs";
 
@@ -111,11 +113,28 @@ function RequestsTable({ requests, neutral = false }: { requests: TogetherReques
   );
 }
 
+// The Agent's own calls, collapsed, with neutral statuses: context, not results.
+export function AgentTrafficDetails({ requests, truncated = false }: { requests: TogetherRequest[]; truncated?: boolean }) {
+  return (
+    <details className="group border-t border-rule">
+      <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-5 py-3 text-xs text-fg-muted">
+        <span className="inline-flex items-center gap-1.5">
+          <ChevronRight aria-hidden className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-90" />
+          <span className="font-semibold text-foreground">Agent traffic</span>
+          <span className="text-fg-faint"> · the Agent&apos;s own model, config and telemetry calls</span>
+        </span>
+        <span className="tabular-nums">{plural(requests.length, truncated)}</span>
+      </summary>
+      <RequestsTable requests={requests} neutral />
+    </details>
+  );
+}
+
 // The egress-proxy capture: every target API call the agent actually made,
 // logged out-of-band so a pass is backed by real server receipts, not narration.
-// On Together the Guardian also sees the Agent's own model, config and telemetry
-// calls; those go in a collapsed "Agent traffic" section and never count as
-// task failures.
+// On Together the Guardian also records the Agent's own model, config and
+// telemetry calls. They never count here, and appear only when "Show agent
+// traffic" is on in Viewer settings.
 export function TogetherRequestsCard({
   requests,
   truncated = false,
@@ -128,11 +147,12 @@ export function TogetherRequestsCard({
   if (!requests || requests.length === 0) return null;
   const { task, agent } = splitApiCalls(requests);
   const { blocked, failed } = summarizeApiCalls(task);
+  const agentTraffic = agent.length > 0 ? <AgentTrafficDetails requests={agent} truncated={agentTruncated} /> : null;
 
-  return (
+  const card = (agentSection: ReactNode) => (
     <div className="rounded-lg border border-rule overflow-hidden bg-background">
       <div className="flex items-center justify-between px-5 py-3.5 border-b border-rule">
-        <h2 className="text-sm font-semibold text-foreground">{agent.length > 0 ? "Task API calls" : "Captured API calls"}</h2>
+        <h2 className="text-sm font-semibold text-foreground">Captured API calls</h2>
         <span className="text-xs text-fg-muted tabular-nums">
           {plural(task.length, truncated)}
           {blocked > 0 && <span className="text-warn"> · {blocked} blocked</span>}
@@ -142,19 +162,11 @@ export function TogetherRequestsCard({
       {task.length > 0
         ? <RequestsTable requests={task} />
         : <p className="px-5 py-3 text-xs text-fg-muted">No calls to the Suite&apos;s API hosts.</p>}
-      {agent.length > 0 && (
-        <details className="group border-t border-rule">
-          <summary className="flex cursor-pointer select-none items-center justify-between gap-3 px-5 py-3 text-xs text-fg-muted">
-            <span className="inline-flex items-center gap-1.5">
-              <ChevronRight aria-hidden className="h-3.5 w-3.5 shrink-0 transition-transform group-open:rotate-90" />
-              <span className="font-semibold text-foreground">Agent traffic</span>
-              <span className="text-fg-faint"> · the Agent&apos;s own model, config and telemetry calls</span>
-            </span>
-            <span className="tabular-nums">{plural(agent.length, agentTruncated)}</span>
-          </summary>
-          <RequestsTable requests={agent} neutral />
-        </details>
-      )}
+      {agentSection}
     </div>
   );
+
+  // With no task calls, the card exists only to show Agent traffic.
+  if (task.length === 0) return <AgentTrafficGate>{card(agentTraffic)}</AgentTrafficGate>;
+  return card(agentTraffic && <AgentTrafficGate>{agentTraffic}</AgentTrafficGate>);
 }
