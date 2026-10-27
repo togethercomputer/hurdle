@@ -205,9 +205,12 @@ assert model.request.headers["x-api-key"] == agent_secret
 assert model.request.headers["authorization"] == "Bearer " + agent_secret
 assert model.request.headers["x-other"] == agent_stand_in
 assert control("status")["activeFlows"] == 0
+assert model.request.headers["accept-encoding"] == "identity", "a swapped flow asks for a plain body"
 model.response = Response.make(200, headers={"content-type": "text/event-stream"})
 addon.responseheaders(model)
-assert model.response.stream is True
+# A swapped flow still streams, through the scrubber that puts stand-ins back.
+assert callable(model.response.stream)
+assert model.response.stream(b"echo " + agent_secret.encode()) + model.response.stream(b"") == b"echo " + agent_stand_in.encode()
 addon.response(model)
 
 # A Host header that disagrees with the tunnel destination never receives a
@@ -1440,7 +1443,7 @@ assert plain_model.request.headers["x-api-key"] == "agent-surrogate", "never sub
 assert plain_model.response is None
 model.response = types.SimpleNamespace(status_code=200, headers={}, stream=False)
 addon.responseheaders(model)
-assert model.response.stream is True
+assert callable(model.response.stream), "a swapped stream is scrubbed as it flows"
 addon.response(model)
 
 socket = flow("socket", "realtime.example.net", "/ws")

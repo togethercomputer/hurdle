@@ -420,6 +420,57 @@ def _non_global_destination(host: str) -> bool:
     return any(_non_global_address(address) for address in addresses)
 
 
+def _swapped_header(current: str, surrogate: str, value: str) -> str | None:
+    """The header value with the real credential in place of an exact stand-in.
+
+    Only a whole value is swapped: the bare stand-in, or one Bearer credential.
+    A stand-in anywhere else would let the Agent choose where the real value
+    lands, for example inside text a server quotes back in an error.
+    """
+    if current == surrogate:
+        return value
+    scheme, separator, credential = current.partition(" ")
+    if separator and scheme.lower() == "bearer" and credential == surrogate:
+        return f"{scheme} {value}"
+    return None
+
+
+class _ResponseScrubber:
+    """Puts the stand-ins back wherever a response repeats a real credential.
+
+    As a mitmproxy stream callable it sees the body chunk by chunk. A real
+    value split across chunks is caught by holding back only the end of each
+    chunk that could still grow into one; the empty final chunk flushes it.
+    """
+
+    def __init__(self, replacements: dict[bytes, bytes]) -> None:
+        self.replacements = sorted(replacements.items(), key=lambda pair: -len(pair[0]))
+        self.held = b""
+
+    def scrub(self, data: bytes) -> bytes:
+        for real, surrogate in self.replacements:
+            data = data.replace(real, surrogate)
+        return data
+
+    def _partial_end(self, data: bytes) -> int:
+        longest = 0
+        for real, _ in self.replacements:
+            for size in range(min(len(real) - 1, len(data)), longest, -1):
+                if real.startswith(data[-size:]):
+                    longest = size
+                    break
+        return longest
+
+    def __call__(self, chunk: bytes) -> bytes:
+        if not chunk:
+            rest, self.held = self.scrub(self.held), b""
+            return rest
+        data = self.scrub(self.held + chunk)
+        keep = self._partial_end(data)
+        self.held = data[len(data) - keep:] if keep else b""
+        return data[: len(data) - keep]
+
+
 class GenericGuardian:
     def __init__(self) -> None:
         self.active = 0
@@ -437,6 +488,9 @@ class GenericGuardian:
         self._observed_websockets: dict[str, dict[str, int]] = {}
         self._websockets: dict[str, dict[str, int]] = {}
         self._passthrough: set[str] = set()
+        # Flow id -> {real value: stand-in} for every credential swapped into
+        # that flow's request; its response gets the stand-ins back.
+        self._scrub: dict[str, dict[bytes, bytes]] = {}
         # Server connection id -> (the name server_connect checked and pinned,
         # the client connection it serves). A tunnel's requests keep naming its
         # first server connection after a reconnect, so a pin lasts as long as
@@ -519,8 +573,40 @@ class GenericGuardian:
                 continue
             for header_name in binding.get("headerNames", []):
                 current = flow.request.headers.get(header_name)
-                if current is not None and surrogate in current:
-                    flow.request.headers[header_name] = current.replace(surrogate, value)
+                swapped = None if current is None else _swapped_header(current, surrogate, value)
+                if swapped is not None:
+                    flow.request.headers[header_name] = swapped
+                    self._scrub.setdefault(flow.id, {})[value.encode("utf-8")] = surrogate.encode("utf-8")
+        if flow.id in self._scrub:
+            # Plain bodies only, so a repeated credential can be found in them.
+            flow.request.headers["accept-encoding"] = "identity"
+
+    def _scrub_headers(self, headers, replacements: dict[bytes, bytes]) -> None:
+        scrubber = _ResponseScrubber(replacements)
+        fields = getattr(headers, "fields", None)
+        if fields is not None:
+            # Raw fields keep repeated headers, such as Set-Cookie, intact.
+            cleaned = tuple((name, scrubber.scrub(value)) for name, value in fields)
+            if cleaned != tuple(fields):
+                headers.fields = cleaned
+            return
+        for name in list(headers):
+            value = headers[name]
+            if isinstance(value, str):
+                cleaned = scrubber.scrub(value.encode("utf-8")).decode("utf-8", "replace")
+                if cleaned != value:
+                    headers[name] = cleaned
+
+    def _scrub_body(self, response, replacements: dict[bytes, bytes]) -> None:
+        try:
+            # Decoded content; setting it re-encodes with the same encoding.
+            content = response.content
+        except ValueError:
+            return
+        if content:
+            cleaned = _ResponseScrubber(replacements).scrub(content)
+            if cleaned != content:
+                response.content = cleaned
 
     def _destination(self, flow: http.HTTPFlow) -> str:
         # Where mitmproxy actually connects: the CONNECT target or the URL's
@@ -563,6 +649,7 @@ class GenericGuardian:
         # would otherwise log the error and send the request on unchecked.
         self._passthrough.discard(flow.id)
         self._observed.pop(flow.id, None)
+        self._scrub.pop(flow.id, None)
         if self._started.pop(flow.id, None) is not None:
             self.active = max(0, self.active - 1)
         flow.request.stream = False
@@ -738,9 +825,19 @@ class GenericGuardian:
         # Model responses are long server-sent event streams, and observed
         # downloads can be large; forward both as they arrive instead of
         # buffering the whole body in the Guardian.
-        if (
-            flow.id in self._passthrough or flow.id in self._observed
-        ) and flow.response is not None:
+        if flow.response is None:
+            return
+        streamed = flow.id in self._passthrough or flow.id in self._observed
+        replacements = self._scrub.get(flow.id)
+        if replacements:
+            self._scrub_headers(flow.response.headers, replacements)
+            encoding = (flow.response.headers.get("content-encoding") or "identity").strip().lower()
+            if streamed and encoding == "identity":
+                flow.response.stream = _ResponseScrubber(replacements)
+            # A compressed body cannot be scrubbed chunk by chunk, so it is
+            # buffered and scrubbed whole in response().
+            return
+        if streamed:
             flow.response.stream = True
 
     def _append(self, observed: dict[str, object]) -> None:
@@ -1109,6 +1206,9 @@ class GenericGuardian:
         if flow.request.pretty_host == CONTROL_HOST:
             return
         status_code = flow.response.status_code if flow.response else None
+        replacements = self._scrub.get(flow.id) if status_code == 101 else self._scrub.pop(flow.id, None)
+        if replacements and flow.response is not None and not callable(getattr(flow.response, "stream", False)):
+            self._scrub_body(flow.response, replacements)
         if flow.id in self._passthrough:
             if status_code != 101:
                 self._passthrough.discard(flow.id)
@@ -1153,6 +1253,15 @@ class GenericGuardian:
         })
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
+        replacements = self._scrub.get(flow.id)
+        messages = getattr(getattr(flow, "websocket", None), "messages", ())
+        if replacements and messages and not messages[-1].from_client:
+            message = messages[-1]
+            scrubber = _ResponseScrubber(replacements)
+            if isinstance(message.content, str):
+                message.content = scrubber.scrub(message.content.encode("utf-8")).decode("utf-8", "replace")
+            elif message.content:
+                message.content = scrubber.scrub(message.content)
         if flow.id in self._passthrough:
             return
         observed = flow.id in self._observed
@@ -1181,6 +1290,7 @@ class GenericGuardian:
         counters[byte_key] += size
 
     def websocket_end(self, flow: http.HTTPFlow) -> None:
+        self._scrub.pop(flow.id, None)
         if flow.id in self._passthrough:
             self._passthrough.discard(flow.id)
             return
@@ -1190,6 +1300,7 @@ class GenericGuardian:
         self._finish_websocket(flow)
 
     def error(self, flow: http.HTTPFlow) -> None:
+        self._scrub.pop(flow.id, None)
         if flow.id in self._passthrough:
             self._passthrough.discard(flow.id)
             return
