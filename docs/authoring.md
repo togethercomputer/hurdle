@@ -340,10 +340,10 @@ api: {
 },
 ```
 
-Supply the value through the Runtime or `.env.local`; never commit it. The
-framework redacts known credentials from newly captured evidence, but you should
-still avoid asking Agents to print secrets and review results before sharing
-them.
+Supply the value through the Runtime or `.env.local`; never commit it. Hurdle
+removes the exact text of known credentials, and its escaped forms, from newly
+captured evidence. An encoded or split copy, such as base64, is not caught, so
+avoid asking Agents to print secrets and review results before sharing them.
 
 A Suite is code you run. The Suite file, `checks.mjs` and `guard.mjs` run on
 your machine, inside Hurdle, with the same access to your environment and
@@ -359,9 +359,10 @@ data. The Agent's own model key works the same way on its provider's hosts.
 Give evals a dedicated key with a low balance, and block costly or destructive
 requests in [`guard.mjs`](#block-an-expensive-or-destructive-request).
 
-Local runs execute Agent code on the host and are not a security sandbox. Use
-a Runtime configured for E2B or Together sandbox for isolation and trusted
-HTTP/tool evidence.
+Local runs execute Agent code on the host and are not a security sandbox: a
+Local Agent can read `.env.local`, including E2B, Together, Judge and database
+keys. Use a Runtime configured for E2B or Together sandbox to isolate the Agent
+and get trusted HTTP/tool evidence.
 See [sandbox setup](./sandbox-setup.md).
 
 In E2B and Together sandboxes, the Agent's own model credential and the Suite's

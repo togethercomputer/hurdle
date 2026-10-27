@@ -153,12 +153,15 @@ The table shows where each real credential is held. Where it says Guardian
 only, the Agent receives a random stand-in value and the Guardian swaps in the
 real key only on HTTPS requests to that key's own hosts, after TLS verification,
 and only when the request's Host header names the host the connection actually
-reaches; a stand-in the Agent prints or sends elsewhere is useless. The Agent
-can still use the key on those hosts, for any request; see
+reaches; a stand-in the Agent prints or sends elsewhere is useless. If a
+response from one of those hosts repeats the real key, the Guardian puts the
+stand-in back before the Agent sees it. The Agent can still use the key on those
+hosts, for any request; see
 [credentials and safety](./authoring.md#credentials-and-safety). On E2B the
-Guardian is a separate VM; on Together it is a process on the machine running
-Hurdle. Anything held in the Agent VM or Agent process can be read by Agent code
-and by anything a prompt persuades the Agent to run.
+Guardian is a separate VM on E2B's infrastructure, so E2B holds the real keys
+during a run; on Together it is a process on the machine running Hurdle.
+Anything held in the Agent VM or Agent process can be read by Agent code and by
+anything a prompt persuades the Agent to run.
 
 | Credential | E2B | Together | Together with `snapshotAlias` | Local |
 | --- | --- | --- | --- | --- |
@@ -166,7 +169,10 @@ and by anything a prompt persuades the Agent to run.
 | Suite `api.authorizationCredential`, for other Tasks | Guardian only | Guardian only | Agent VM | Agent process |
 | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` | Guardian only | Guardian only | Guardian only | Agent process |
 | `CODEX_API_KEY` or `OPENAI_API_KEY` | Guardian only | Guardian only | Guardian only | Agent process |
-| `E2B_API_KEY`, `TOGETHER_API_KEY` for the sandbox, Judge key | Controller only | Controller only | Controller only | Controller only |
+| `E2B_API_KEY`, `TOGETHER_API_KEY` for the sandbox, Judge key, result-store database URL | Controller only | Controller only | Controller only | Controller, and readable by the Agent in `.env.local` |
+
+A Local Agent runs as you, so it can read `.env.local` and anything else your
+account can read, whatever its own environment holds.
 
 On E2B and on Together without a `snapshotAlias`, every Task credential is
 delivered through the Guardian whatever the Task's checks, so advisory checks keep
@@ -188,8 +194,10 @@ traffic to `api.anthropic.com` or `api.openai.com` passes through
 the Guardian, which swaps in the key and streams the exchange without applying
 `guard.mjs` rules to it. On E2B those exchanges are not recorded; on Together they
 are recorded as metadata only. The Agent can still use its model, and code it
-writes can call that API through the Guardian, during the run; it cannot take the
-key out of the run. Codex runs with an OpenAI API key only; a ChatGPT access
+writes can call that API through the Guardian, during the run; it cannot read the
+key or take it out of the run. Some APIs can create a separate credential the
+Agent can read, such as OpenAI's short-lived realtime client secrets, and the
+Guardian does not block those, so give evals keys you can revoke. Codex runs with an OpenAI API key only; a ChatGPT access
 token (`CODEX_ACCESS_TOKEN`) is never given to the Agent.
 
 ## Use Postgres for results

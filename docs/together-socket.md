@@ -38,7 +38,8 @@ Authorization: Bearer <TOGETHER_API_KEY>
 X-Sandbox-CA: <base64 body of the Guardian CA's PEM>
 ```
 
-`Authorization` is consumed by Together. `X-Sandbox-CA` is forwarded to the server
+Together's relay consumes `Authorization` and does not forward it; the sandbox
+server does not check for it itself. `X-Sandbox-CA` is forwarded to the server
 unchanged, which installs the certificate into the sandbox's trust stores before
 any step runs. Failures before the upgrade are plain HTTP: 401 or 403 for the key,
 502 when the sandbox never accepted, 503 when Together has no capacity or no
