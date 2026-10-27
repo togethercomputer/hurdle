@@ -287,7 +287,6 @@ export default async function SessionPage({
     ? (rawTogetherRequests.filter((row) => row && typeof row === "object") as Array<Record<string, unknown>>)
     : [];
   const togetherRequestsTruncated = dbSessionRecord.togetherRequestsTruncated === true;
-  const togetherAgentTrafficTruncated = dbSessionRecord.togetherAgentTrafficTruncated === true;
   // Shared frame: breadcrumbs, version chip, pager and page header.
   const [versions, allSessions] = await Promise.all([
     getVersions().catch(() => []),
@@ -376,7 +375,6 @@ export default async function SessionPage({
                 <TogetherRequestsCard
                   requests={togetherRequests as Parameters<typeof TogetherRequestsCard>[0]["requests"]}
                   truncated={togetherRequestsTruncated}
-                  agentTruncated={togetherAgentTrafficTruncated}
                 />
               )}
               <p className="text-xs text-fg-faint pt-2">Session JSONL not available — conversation view requires the full session log.</p>
@@ -531,9 +529,7 @@ export default async function SessionPage({
   const evaluatorSources = canonicalEvaluatorSources(dbSessionRecord.evaluatorSources);
   const storedDeterministicOverall = canonicalDeterministicOverall(dbSessionRecord.deterministicEffectiveVerdict);
   const reviewCount = storedChecks.length + (canonicalJudge ? 1 : 0);
-  // Agent traffic is hidden unless Viewer settings show it, so count the task calls.
-  const hasTaskRequests = togetherRequests.some((row) => row.scope !== "agent");
-  const evidenceCount = 1 + (hasTaskRequests ? 1 : 0) + (toolsUsed.length > 0 ? 1 : 0);
+  const evidenceCount = 1 + (togetherRequests.length > 0 ? 1 : 0) + (toolsUsed.length > 0 ? 1 : 0);
 
   return (
     <ResizableSessionShell messages={session.messages} initialRailWidth={sidebarLayout.width} initialRailCollapsed={sidebarLayout.collapsed}>
@@ -728,7 +724,6 @@ export default async function SessionPage({
                   <TogetherRequestsCard
                     requests={togetherRequests as Parameters<typeof TogetherRequestsCard>[0]["requests"]}
                     truncated={togetherRequestsTruncated}
-                    agentTruncated={togetherAgentTrafficTruncated}
                   />
                 )}
 

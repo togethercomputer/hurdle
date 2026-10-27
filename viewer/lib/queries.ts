@@ -107,7 +107,6 @@ export type SessionDetail = SessionSummary & {
   deepAudit: unknown;
   togetherRequests: unknown;
   togetherRequestsTruncated?: boolean;
-  togetherAgentTrafficTruncated?: boolean;
   toolVersions: unknown;
   failureAnalysis: unknown;
   failureReview: unknown;

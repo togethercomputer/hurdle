@@ -149,11 +149,10 @@ See [Upgrading](#upgrading).
   both the sandbox and a Task is listed once when missing.
 - The README says how to install the Claude Code and Codex CLIs, and its image
   no longer pins an old version.
-- **The Viewer hides Agent traffic by default.** On Together, the Guardian also
+- **The Viewer lists only the Task's API calls.** On Together, the Guardian also
   records the Agent's own model, config and telemetry calls. A run's Captured
-  API calls now list and count only calls to the Suite's API hosts. To see the
-  Agent's calls too, turn on **Show agent traffic** in the new Viewer settings
-  menu (the gear next to the theme switch). Stored results keep every call.
+  API calls now list and count only calls to the Suite's API hosts. Stored
+  results keep every call.
 
 ### Other
 
