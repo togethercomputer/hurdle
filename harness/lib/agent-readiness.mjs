@@ -12,7 +12,7 @@ import { cliExecutable, suiteCommand } from "./terminal-output.mjs";
 const nonblank = value => typeof value === "string" && value.trim().length > 0;
 const result = (status, code, message) => ({ status, code, message });
 const CLAUDE_RECOVERY = "Set a valid ANTHROPIC_API_KEY in .env.local, or unset it and set CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`. Hurdle uses isolated credentials rather than your interactive login.";
-const CODEX_RECOVERY = "Set CODEX_ACCESS_TOKEN, CODEX_API_KEY, or OPENAI_API_KEY in .env.local. Hurdle does not inherit your interactive Codex login.";
+const CODEX_RECOVERY = "Set CODEX_API_KEY or OPENAI_API_KEY in .env.local. Hurdle uses OpenAI API keys only, not ChatGPT access tokens or your interactive Codex login.";
 const AGENT_LABELS = { "claude-code": "Claude Code", codex: "Codex" };
 
 // Probe only the executable, without credentials, project settings, or an Agent
@@ -137,9 +137,12 @@ export async function checkAgentReadiness({
       // A host CLI probe is inapplicable; run observes startup inside the VM.
       checks.push(result("skip", "agent.remote-unverified", `${label} runs inside the ${runtimeProfile.environment.kind === "together" ? "Together" : "E2B"} sandbox; no local CLI installation needed.`));
     }
+    if (!claude && nonblank(runtimeEnv.CODEX_ACCESS_TOKEN)) {
+      checks.push(result("warning", "auth.access-token-unsupported", "Codex · CODEX_ACCESS_TOKEN is ignored: Hurdle runs Codex with an OpenAI API key only."));
+    }
     const name = (claude
       ? ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
-      : ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"])
+      : ["CODEX_API_KEY", "OPENAI_API_KEY"])
       .find(name => nonblank(runtimeEnv[name]));
     if (!name) {
       checks.push(result("fail", "auth.missing", `${label} has no explicit credential. ${claude ? CLAUDE_RECOVERY : CODEX_RECOVERY}`));
@@ -147,8 +150,8 @@ export async function checkAgentReadiness({
     }
     const overridden = claude && name === "ANTHROPIC_API_KEY" && nonblank(runtimeEnv.CLAUDE_CODE_OAUTH_TOKEN)
       ? " (takes precedence over CLAUDE_CODE_OAUTH_TOKEN)" : "";
-    if (["CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"].includes(name)) {
-      // These first-party subscription tokens have no supported model-list
+    if (name === "CLAUDE_CODE_OAUTH_TOKEN") {
+      // This first-party subscription token has no supported model-list
       // authentication probe. Presence is not proof of validity or billing.
       checks.push(result("warning", "auth.token-unverified", `${label} · ${name} configured; live validity unverified.`));
     } else {

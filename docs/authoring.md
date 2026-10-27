@@ -47,9 +47,8 @@ may be cached, and provider-only entries have unverified runner compatibility;
 OpenAI's provider catalog lacks coding/modality metadata, so its default
 shortlist uses a conservative naming heuristic to omit obvious audio, image,
 search, embedding and fine-tuned IDs. This is not a compatibility check;
-unfamiliar provider IDs remain discoverable with `--all`. An explicit
-`CODEX_ACCESS_TOKEN` takes precedence, so discovery does not query a different
-API-key account in that case. Catalog entries do not verify execution access.
+unfamiliar provider IDs remain discoverable with `--all`. Catalog entries do
+not verify execution access.
 New releases may require updating the Agent CLI or sandbox image. Discovery
 never changes the pinned Suite defaults or restricts an explicit `--model` ID.
 `models --help` and `run SUITE --model -h` remain offline.
@@ -63,11 +62,10 @@ configuration; an interactive CLI login alone is not inherited.
 
 - Claude Code: `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` generated with
   `claude setup-token`. A nonblank API key takes precedence over the OAuth token.
-- Codex: `CODEX_ACCESS_TOKEN`, then `CODEX_API_KEY`, then `OPENAI_API_KEY`. Codex
-  access tokens exist only for ChatGPT Business and Enterprise workspaces, where
-  they are created in the ChatGPT admin console
-  ([OpenAI docs](https://developers.openai.com/codex/enterprise/access-tokens)).
-  With a personal ChatGPT plan, use an OpenAI API key.
+- Codex: `CODEX_API_KEY`, then `OPENAI_API_KEY`. Hurdle runs Codex with an
+  OpenAI API key only. A ChatGPT access token (`CODEX_ACCESS_TOKEN`) is ignored:
+  it can act for you across all of ChatGPT, not just Codex. An API key can be
+  limited with an OpenAI project budget.
 
 Keep `.env.local` out of version control, then check readiness:
 

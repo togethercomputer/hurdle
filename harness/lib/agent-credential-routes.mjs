@@ -75,8 +75,19 @@ export const DEFAULT_AGENT_CREDENTIAL_ROUTES = Object.freeze({
   ANTHROPIC_API_KEY: Object.freeze({ hosts: ["api.anthropic.com"], headerNames: ["x-api-key", "authorization"] }),
   CLAUDE_CODE_OAUTH_TOKEN: Object.freeze({ hosts: ["api.anthropic.com"], headerNames: ["authorization"] }),
   CODEX_API_KEY: Object.freeze({ hosts: ["api.openai.com"], headerNames: ["authorization"] }),
-  CODEX_ACCESS_TOKEN: Object.freeze({ hosts: ["chatgpt.com", "api.openai.com"], headerNames: ["authorization"] }),
 });
+
+// A Codex ChatGPT access token acts for the user across all of chatgpt.com, not
+// just Codex, so no Agent may be given one, real or stand-in.
+export const UNSUPPORTED_AGENT_CREDENTIALS = Object.freeze(["CODEX_ACCESS_TOKEN"]);
+
+function refuseUnsupportedCredentials(env) {
+  for (const name of UNSUPPORTED_AGENT_CREDENTIALS) {
+    if (typeof env?.[name] === "string" && env[name].trim()) {
+      throw new TypeError(`${name} is not supported; use CODEX_API_KEY or OPENAI_API_KEY`);
+    }
+  }
+}
 
 export function agentCredentialStandIn(value, entropy) {
   // A JWT keeps its header and claims, which a CLI may decode before sending,
@@ -95,6 +106,7 @@ export function agentCredentialStandIn(value, entropy) {
 // value stays with the controller and the Guardian; the Agent sees only the
 // stand-in.
 export function prepareAgentCredentials(launchPlan, entropy) {
+  refuseUnsupportedCredentials(launchPlan?.env);
   const declared = assertCredentialRoutes(launchPlan?.credentialRoutes, launchPlan?.env);
   const declaredNames = new Set(declared.map(({ environmentName }) => environmentName));
   const defaults = Object.entries(DEFAULT_AGENT_CREDENTIAL_ROUTES)
@@ -125,6 +137,7 @@ export function prepareAgentCredentials(launchPlan, entropy) {
 // the same credentials: the Guardian was configured before the first turn.
 export function withAgentCredentialStandIns(launchPlan, agentCredentials) {
   const env = { ...(launchPlan?.env ?? {}) };
+  refuseUnsupportedCredentials(env);
   const routes = assertCredentialRoutes(launchPlan?.credentialRoutes, env);
   const prepared = new Map(agentCredentials.map((credential) => [
     credential.environmentName,

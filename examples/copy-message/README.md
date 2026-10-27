@@ -14,8 +14,8 @@ The agent reads `fixtures/message.txt` and writes its exact contents into
 Install the selected agent CLI and provide explicit authentication in your
 project's `.env.local`. For Claude Code, use a valid `ANTHROPIC_API_KEY`, or run
 `claude setup-token` and set `CLAUDE_CODE_OAUTH_TOKEN` to the generated token.
-An API key takes precedence if both are set. For Codex, set `CODEX_ACCESS_TOKEN`,
-`CODEX_API_KEY`, or `OPENAI_API_KEY` (in that order of precedence).
+An API key takes precedence if both are set. For Codex, set `CODEX_API_KEY` or
+`OPENAI_API_KEY` (in that order of precedence).
 Hurdle uses isolated agent configuration and does not inherit your interactive
 agent login. Keep `.env.local` out of version control.
 

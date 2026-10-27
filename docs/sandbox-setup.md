@@ -43,7 +43,7 @@ prompted values are saved with private file permissions after readiness and
 any required build acceptance, before the build starts.
 
 Claude Code uses `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`; Codex uses
-`CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`, or `OPENAI_API_KEY`. Use
+`CODEX_API_KEY` or `OPENAI_API_KEY`. Use
 `init --example together-api --agent codex` for a Codex demo. Setup's default
 image includes the Agent CLIs selected by the Suite, plus Node 22, Python 3,
 curl, jq, git, and iproute2. Credentials are never baked into the image.
@@ -164,7 +164,6 @@ and by anything a prompt persuades the Agent to run.
 | Suite `api.authorizationCredential`, for other Tasks | Guardian only | Guardian only | Agent VM | Agent process |
 | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` | Guardian only | Guardian only | Guardian only | Agent process |
 | `CODEX_API_KEY` or `OPENAI_API_KEY` | Guardian only | Guardian only | Guardian only | Agent process |
-| `CODEX_ACCESS_TOKEN` | Guardian only | Guardian only | Guardian only | Agent process |
 | `E2B_API_KEY`, `TOGETHER_API_KEY` for the sandbox, Judge key | Controller only | Controller only | Controller only | Controller only |
 
 On E2B and on Together without a `snapshotAlias`, every Task credential is
@@ -183,13 +182,13 @@ Together's Hurdle socket, where the sandbox also has no network of its own; see
 [the Together Hurdle socket](./together-socket.md).
 
 The Agent Adapter declares where its own credential may go. The Agent's model
-traffic to `api.anthropic.com`, `api.openai.com` or `chatgpt.com` passes through
+traffic to `api.anthropic.com` or `api.openai.com` passes through
 the Guardian, which swaps in the key and streams the exchange without applying
 `guard.mjs` rules to it. On E2B those exchanges are not recorded; on Together they
 are recorded as metadata only. The Agent can still use its model, and code it
 writes can call that API through the Guardian, during the run; it cannot take the
-key out of the run. A Codex ChatGPT access token's stand-in keeps the token's
-claims, which Codex reads, and replaces its signature.
+key out of the run. Codex runs with an OpenAI API key only; a ChatGPT access
+token (`CODEX_ACCESS_TOKEN`) is never given to the Agent.
 
 ## Use Postgres for results
 
@@ -330,11 +329,11 @@ package registries, are streamed and recorded as metadata rows (method, host,
 path without query, status, duration) within a separate budget; exhausting it
 drops rows without failing capture. The Guardian retains the real target
 credentials, the Agent's model credentials (`ANTHROPIC_API_KEY`,
-`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`/`OPENAI_API_KEY`,
-`CODEX_ACCESS_TOKEN`) and the private CA; the workload receives only public trust
+`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_API_KEY`/`OPENAI_API_KEY`) and the private
+CA; the workload receives only public trust
 material and surrogates. The Guardian swaps each surrogate for its real value
 only in that credential's headers, only over HTTPS to its own provider hosts
-(`api.anthropic.com`, `api.openai.com`, `chatgpt.com`). Together's management bearer token stays in the
+(`api.anthropic.com`, `api.openai.com`). Together's management bearer token stays in the
 controller.
 
 Keep this machine online while cells run: an end-to-end CONNECT preflight runs

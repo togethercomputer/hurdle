@@ -45,7 +45,7 @@ test("Claude Code routes its selected credential only to the Anthropic API", () 
   assert.deepEqual(both.credentialRoutes, [anthropicRoute("ANTHROPIC_API_KEY")]);
 });
 
-test("Codex routes an API key to the OpenAI API and an access token to ChatGPT and OpenAI", () => {
+test("Codex routes only an API key, to the OpenAI API, and ignores a ChatGPT access token", () => {
   const route = {
     environmentName: "CODEX_API_KEY",
     hosts: ["api.openai.com"],
@@ -54,12 +54,19 @@ test("Codex routes an API key to the OpenAI API and an access token to ChatGPT a
   assert.deepEqual(codexPlan({ OPENAI_API_KEY: "sk-proj-key" }).credentialRoutes, [route]);
   assert.deepEqual(codexPlan({ CODEX_API_KEY: "sk-proj-key" }).credentialRoutes, [route]);
   const accessToken = codexPlan({ CODEX_ACCESS_TOKEN: "chatgpt-access-token" });
-  assert.equal(accessToken.env.CODEX_ACCESS_TOKEN, "chatgpt-access-token");
-  assert.deepEqual(accessToken.credentialRoutes, [{
-    environmentName: "CODEX_ACCESS_TOKEN",
-    hosts: ["chatgpt.com", "api.openai.com"],
-    headerNames: ["authorization"],
-  }]);
+  assert.equal(accessToken.env.CODEX_ACCESS_TOKEN, undefined);
+  assert.deepEqual(accessToken.credentialRoutes, []);
+  const both = codexPlan({ CODEX_ACCESS_TOKEN: "chatgpt-access-token", OPENAI_API_KEY: "sk-proj-key" });
+  assert.equal(both.env.CODEX_ACCESS_TOKEN, undefined);
+  assert.deepEqual(both.credentialRoutes, [route]);
+});
+
+test("no Agent is given a ChatGPT access token, real or stand-in", () => {
+  const plan = { env: { CODEX_ACCESS_TOKEN: "eyJh.eyJz.SIG" } };
+  assert.throws(() => prepareAgentCredentials(plan, () => "fallback"), /CODEX_ACCESS_TOKEN is not supported/);
+  assert.throws(() => withAgentCredentialStandIns(plan, []), /CODEX_ACCESS_TOKEN is not supported/);
+  // A blank value is no credential at all.
+  assert.deepEqual(prepareAgentCredentials({ env: { CODEX_ACCESS_TOKEN: " " } }, () => "fallback"), []);
 });
 
 test("credential routes are closed, scoped to present credentials, and bounded", () => {
@@ -169,7 +176,7 @@ test("well-known Agent credentials get stand-ins even when no route is declared"
   const undeclared = prepareAgentCredentials({
     env: {
       ANTHROPIC_API_KEY: "sk-ant-api03-real",
-      CODEX_ACCESS_TOKEN: "eyJh.eyJz.SIG",
+      CODEX_API_KEY: "sk-proj-real",
       ADAPTER_AUTH: "custom-secret",
     },
   }, entropy);
@@ -183,19 +190,19 @@ test("well-known Agent credentials get stand-ins even when no route is declared"
       surrogate: "sk-ant-api03-fallback",
     },
     {
-      environmentName: "CODEX_ACCESS_TOKEN",
-      hosts: ["chatgpt.com", "api.openai.com"],
+      environmentName: "CODEX_API_KEY",
+      hosts: ["api.openai.com"],
       headerNames: ["authorization"],
-      surrogate: "eyJh.eyJz.fallback",
+      surrogate: "sk-proj-fallback",
     },
   ]);
   const env = withAgentCredentialStandIns({ env: {
     ANTHROPIC_API_KEY: "sk-ant-api03-real",
-    CODEX_ACCESS_TOKEN: "eyJh.eyJz.SIG",
+    CODEX_API_KEY: "sk-proj-real",
     ADAPTER_AUTH: "custom-secret",
   } }, undeclared);
   assert.equal(env.ANTHROPIC_API_KEY, "sk-ant-api03-fallback");
-  assert.equal(env.CODEX_ACCESS_TOKEN, "eyJh.eyJz.fallback");
+  assert.equal(env.CODEX_API_KEY, "sk-proj-fallback");
   assert.equal(env.ADAPTER_AUTH, "custom-secret", "only well-known names have a known route");
 
   // A declared route wins over the default for the same credential.

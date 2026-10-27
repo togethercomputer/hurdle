@@ -41,7 +41,7 @@ Results are saved in `.hurdle/`. Reopen them with `npx hurdle view`, adding
 | Codex | `npx hurdle init --agent codex` | `OPENAI_API_KEY` |
 
 Install the selected agent CLI. Generate a Claude subscription token with `claude setup-token`.
-Codex also accepts `CODEX_ACCESS_TOKEN`, a Codex access token from a ChatGPT Business or Enterprise workspace.
+Codex runs with an OpenAI API key only (`OPENAI_API_KEY` or `CODEX_API_KEY`), not a ChatGPT login.
 
 Starters use Opus 5.5 or GPT-6.1 Sol with medium effort. Discover other models:
 

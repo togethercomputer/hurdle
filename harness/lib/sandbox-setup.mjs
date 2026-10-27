@@ -125,7 +125,7 @@ export async function setupSandbox({ suite, template, yes = false, interactive =
     const requirements = [
       { label: "E2B", anyOf: [profile.environment.apiKeyEnv] },
       ...ids.map(id => ({ label: id === "codex" ? "Codex" : "Claude Code", anyOf: id === "codex"
-        ? ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] })),
+        ? ["CODEX_API_KEY", "OPENAI_API_KEY"] : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] })),
       ...taskCredentials.map(name => ({ label: "Task", anyOf: [name] })),
       ...(judgeRequired ? [{ label: "Judge", anyOf: [profile.judge.credentialEnv] }] : []),
       ...(profile.resultStore.kind === "postgres" ? [{ label: "Postgres", anyOf: [profile.resultStore.databaseUrlEnv] }] : []),

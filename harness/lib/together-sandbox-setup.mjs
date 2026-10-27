@@ -285,7 +285,7 @@ export async function setupTogetherSandbox(
         label: id === "codex" ? "Codex" : "Claude Code",
         anyOf:
           id === "codex"
-            ? ["CODEX_ACCESS_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"]
+            ? ["CODEX_API_KEY", "OPENAI_API_KEY"]
             : ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
       })),
       ...taskCredentials.map((name) => ({ label: "Task", anyOf: [name] })),

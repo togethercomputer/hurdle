@@ -23,9 +23,8 @@ function selectedCodexEnvironment(runtimeEnv) {
   for (const name of ALLOWED_ENVIRONMENT_NAMES) {
     if (runtimeEnv[name] !== undefined) selected[name] = runtimeEnv[name];
   }
-  if (isNonblankString(runtimeEnv.CODEX_ACCESS_TOKEN)) {
-    selected.CODEX_ACCESS_TOKEN = runtimeEnv.CODEX_ACCESS_TOKEN;
-  } else if (isNonblankString(runtimeEnv.CODEX_API_KEY)) {
+  // Only API keys: a ChatGPT access token is never passed to Codex.
+  if (isNonblankString(runtimeEnv.CODEX_API_KEY)) {
     selected.CODEX_API_KEY = runtimeEnv.CODEX_API_KEY;
   } else if (isNonblankString(runtimeEnv.OPENAI_API_KEY)) {
     selected.CODEX_API_KEY = runtimeEnv.OPENAI_API_KEY;
@@ -33,17 +32,8 @@ function selectedCodexEnvironment(runtimeEnv) {
   return selected;
 }
 
-// Codex sends an API key as a bearer token to the OpenAI API, and a ChatGPT
-// access token to ChatGPT's backend or the OpenAI API. An access token is a
-// JWT: its stand-in keeps the claims Codex reads and replaces the signature.
+// Codex sends its API key as a bearer token to the OpenAI API only.
 function codexCredentialRoutes(environment) {
-  if (isNonblankString(environment.CODEX_ACCESS_TOKEN)) {
-    return [{
-      environmentName: "CODEX_ACCESS_TOKEN",
-      hosts: ["chatgpt.com", "api.openai.com"],
-      headerNames: ["authorization"],
-    }];
-  }
   return isNonblankString(environment.CODEX_API_KEY)
     ? [{
         environmentName: "CODEX_API_KEY",
@@ -53,6 +43,7 @@ function codexCredentialRoutes(environment) {
     : [];
 }
 
+// A leftover CODEX_ACCESS_TOKEN is never used, but is still redacted.
 function secretValues(runtimeEnv) {
   return [...new Set([
     runtimeEnv.CODEX_ACCESS_TOKEN,
@@ -121,7 +112,7 @@ function codexOperatorReason(frames) {
     return "Codex could not run because the OpenAI account has insufficient quota.";
   }
   if (failed(/\b401\b|unauthorized|invalid_api_key|incorrect api key/iu)) {
-    return "Codex authentication failed. Set a valid CODEX_ACCESS_TOKEN, CODEX_API_KEY, or OPENAI_API_KEY in .env.local, then run `npx hurdle validate`.";
+    return "Codex authentication failed. Set a valid CODEX_API_KEY or OPENAI_API_KEY in .env.local, then run `npx hurdle validate`.";
   }
   if (failed(/model_not_found|model `[^`]*` does not exist/iu)) {
     return "Codex could not use the requested model; it may not exist or the account may lack access. Check the model ID with `npx hurdle models --agent codex`.";

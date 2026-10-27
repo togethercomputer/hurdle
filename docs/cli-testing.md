@@ -126,8 +126,8 @@ should exit 1 with a Suite diagnostic.
 
 Install both agent CLIs and configure explicit credentials in the project's
 `.env.local` or shell. Claude accepts `ANTHROPIC_API_KEY` or
-`CLAUDE_CODE_OAUTH_TOKEN`; Codex accepts `CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`,
-or `OPENAI_API_KEY`. Interactive agent logins are not inherited.
+`CLAUDE_CODE_OAUTH_TOKEN`; Codex accepts `CODEX_API_KEY` or `OPENAI_API_KEY`.
+Interactive agent logins are not inherited.
 
 ```sh
 hurdle validate

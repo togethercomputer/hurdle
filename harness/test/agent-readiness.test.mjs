@@ -71,8 +71,27 @@ test("OpenAI key probes follow the Codex adapter's precedence and never infer", 
   assert.equal(checked.checks.filter(value => value.code.startsWith("auth.")).length, 1);
 });
 
+test("a Codex ChatGPT access token is ignored, and alone it is no credential", async () => {
+  const alone = await checkAgentReadiness(input({ CODEX_ACCESS_TOKEN: "chatgpt-token" }, "codex"), {
+    probeCli: async () => true,
+    fetch() { assert.fail("A ChatGPT access token must not be probed"); },
+  });
+  assert.equal(alone.ok, false);
+  assert.ok(alone.checks.some(value => value.code === "auth.access-token-unsupported" && value.status === "warning"));
+  assert.ok(alone.checks.some(value => value.code === "auth.missing" && /CODEX_API_KEY or OPENAI_API_KEY/.test(value.message)));
+  const withKey = await checkAgentReadiness(input({ CODEX_ACCESS_TOKEN: "chatgpt-token", OPENAI_API_KEY: "selected" }, "codex"), {
+    probeCli: async () => true,
+    fetch: async (_url, options) => {
+      assert.equal(options.headers.authorization, "Bearer selected");
+      return success();
+    },
+  });
+  assert.equal(withKey.ok, true);
+  assert.match(JSON.stringify(withKey), /OpenAI · OPENAI_API_KEY verified/);
+});
+
 test("subscription credentials report presence without claiming live verification", async () => {
-  for (const [adapter, name] of [["claude-code", "CLAUDE_CODE_OAUTH_TOKEN"], ["codex", "CODEX_ACCESS_TOKEN"]]) {
+  for (const [adapter, name] of [["claude-code", "CLAUDE_CODE_OAUTH_TOKEN"]]) {
     const checked = await checkAgentReadiness(input({ [name]: "configured-token", OPENAI_API_KEY: "ignored" }, adapter), {
       probeCli: async () => true,
       fetch() { throw new Error("Subscription tokens must not be sent to API-key endpoints"); },
@@ -300,7 +319,8 @@ test("init --agent codex creates a valid Codex starter and gives the right crede
   assert.match(text, /Auth      .env.local or shell/);
   let guidance = "";
   await cli.main(["help", "init"], { ...io, stdout: { write(v) { guidance += v; } } });
-  assert.match(guidance, /Codex uses CODEX_ACCESS_TOKEN/);
+  assert.match(guidance, /Codex uses CODEX_API_KEY or/);
+  assert.doesNotMatch(guidance, /CODEX_ACCESS_TOKEN/);
   const suite = await resolveV1Suite({ suitePath: join(root, "evals/example.suite.mjs") });
   t.after(() => suite.dispose());
   assert.equal(suite.ok, true);
