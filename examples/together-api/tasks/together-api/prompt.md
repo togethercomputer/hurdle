@@ -10,6 +10,7 @@ never print or save the key. Make one call per endpoint, with no extra API calls
 or retries. Use a 30-second request timeout, treat any HTTP error as a failure
 but read its JSON error body, and avoid redirects. If a request fails or the
 model is not listed, stop and explain it.
+Set your own User-Agent header: Together rejects Python urllib's default one.
 
 The model list can still include retired models. If the completion returns
 HTTP 400 with error code `model_not_available`, stop and reply that the model is
