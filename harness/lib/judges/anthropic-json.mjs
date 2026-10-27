@@ -1,3 +1,5 @@
+import { spawn as spawnProcess } from "node:child_process";
+
 export const ANTHROPIC_JSON_JUDGE_ID = "anthropic-json-v1";
 export const ANTHROPIC_JSON_JUDGE_MAX_TIMEOUT_MS = 120_000;
 export const ANTHROPIC_JSON_JUDGE_MAX_INPUT_BYTES = 1_048_576;
@@ -6,7 +8,9 @@ export const ANTHROPIC_JSON_JUDGE_MAX_REQUEST_BYTES =
   (2 * ANTHROPIC_JSON_JUDGE_MAX_INPUT_BYTES) + (64 * 1024);
 export const ANTHROPIC_JSON_JUDGE_MAX_RESPONSE_BYTES = 256 * 1024;
 
+
 const MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+const OAUTH_TOKEN_PREFIX = "sk-ant-oat";
 const OUTCOMES = new Set(["pass", "fail", "incomplete"]);
 // Rate limits and overload are transient; one should not discard a costly
 // Agent run. Retries happen only before any decision bytes are read.
@@ -184,10 +188,92 @@ async function readDecision(response) {
   }
 }
 
+export function isClaudeCodeOauthToken(value) {
+  return typeof value === "string" && value.startsWith(OAUTH_TOKEN_PREFIX);
+}
+
+// A Claude Code OAuth token cannot call the Messages API. Claude Code in print
+// mode carries the same model, system prompt, envelope and decision contract on
+// that token, with no tools, no MCP servers and no session.
+function claudeCodeDecision({ model, token, inputJson, signal, spawn, env }) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-p", "--model", model,
+      "--system-prompt", ANTHROPIC_JSON_JUDGE_SYSTEM_PROMPT,
+      "--exclude-dynamic-system-prompt-sections",
+      "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+      "--output-format", "json",
+    ];
+    const childEnv = { ...env, CLAUDE_CODE_OAUTH_TOKEN: token };
+    delete childEnv.ANTHROPIC_API_KEY;
+    let child;
+    try {
+      child = spawn("claude", args, { stdio: ["pipe", "pipe", "ignore"], env: childEnv });
+    } catch {
+      reject(providerFailed());
+      return;
+    }
+    const chunks = [];
+    let bytes = 0;
+    let settled = false;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      child.kill();
+      settle(reject, providerFailed());
+    };
+    if (signal?.aborted) { onAbort(); return; }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdin.on("error", () => {});
+    child.stdin.end(inputJson);
+    child.stdout.on("data", (chunk) => {
+      bytes += chunk.byteLength;
+      if (bytes > ANTHROPIC_JSON_JUDGE_MAX_RESPONSE_BYTES) {
+        child.kill();
+        settle(reject, providerFailed());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    child.on("error", () => settle(reject, providerFailed()));
+    child.on("close", (code) => {
+      if (code !== 0) { settle(reject, providerFailed()); return; }
+      let output;
+      try {
+        output = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      } catch {
+        settle(reject, providerFailed());
+        return;
+      }
+      const result = Array.isArray(output) ? output.find((entry) => entry?.type === "result") : output;
+      if (!result || result.is_error || result.subtype !== "success" || typeof result.result !== "string") {
+        settle(reject, providerFailed());
+        return;
+      }
+      const text = result.result.trim().replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
+      if (Buffer.byteLength(text) > ANTHROPIC_JSON_JUDGE_MAX_OUTPUT_BYTES) {
+        settle(reject, invalidOutput());
+        return;
+      }
+      try {
+        settle(resolve, parseDecision(text));
+      } catch (error) {
+        settle(reject, error);
+      }
+    });
+  });
+}
+
 export function createAnthropicJsonJudge({
   model,
   apiKey,
   fetch = globalThis.fetch,
+  spawn = spawnProcess,
+  env = process.env,
   retryDelayMs: baseRetryDelayMs = 1_000,
 } = {}) {
   if (!nonblank(model) || !nonblank(apiKey) || typeof fetch !== "function") {
@@ -222,6 +308,9 @@ export function createAnthropicJsonJudge({
       }
       if (Buffer.byteLength(body) > ANTHROPIC_JSON_JUDGE_MAX_REQUEST_BYTES) {
         throw new Error("Anthropic JSON Judge request exceeds its limit");
+      }
+      if (isClaudeCodeOauthToken(apiKey)) {
+        return claudeCodeDecision({ model, token: apiKey, inputJson: JSON.stringify(input), signal, spawn, env });
       }
       for (let attempt = 1; ; attempt += 1) {
         let response;

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkE2bCredential, checkPostgresCredential, checkTogetherSandboxCredential } from "./credential-preflight.mjs";
 import { findHostGuardianRuntime } from "./host-guardian-runtime.mjs";
+import { isClaudeCodeOauthToken } from "./judges/anthropic-json.mjs";
 import { normalizeTogetherSettings } from "./execution-environments/together.mjs";
 import { managedImageAgents, managedImageName } from "./managed-images.mjs";
 import { listLocalCodexModels } from "./model-discovery.mjs";
@@ -159,7 +160,11 @@ export async function checkAgentReadiness({
     }
   }
   if (judgeCredentialName && nonblank(runtimeEnv[judgeCredentialName])) {
-    await verify("Anthropic", judgeCredentialName);
+    if (isClaudeCodeOauthToken(runtimeEnv[judgeCredentialName])) {
+      checks.push(result("warning", "auth.token-unverified", `Judge · ${judgeCredentialName} is a Claude Code OAuth token, so the Judge runs through Claude Code; live validity unverified.`));
+    } else {
+      await verify("Anthropic", judgeCredentialName);
+    }
   }
   for (const name of requiredCredentials) {
     if (name === "TOGETHER_API_KEY" && nonblank(runtimeEnv[name])) { await verify("Together", name); continue; }

@@ -319,3 +319,58 @@ test("Anthropic JSON Judge fails closed on a provider error event", async () => 
   await assert.rejects(judge.judge({ schemaVersion: 2 }), /provider failed/);
   assert.equal(streamCancelled, true);
 });
+
+test("Anthropic JSON Judge runs through Claude Code when the credential is an OAuth token", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const calls = [];
+  const judge = createAnthropicJsonJudge({
+    model: "claude-test-model",
+    apiKey: "sk-ant-oat01-test",
+    env: { PATH: "/bin", ANTHROPIC_API_KEY: "sk-ant-api03-stale" },
+    fetch: async () => { throw new Error("not invoked"); },
+    spawn(command, args, options) {
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), kill() {} });
+      let input = "";
+      child.stdin.on("data", (chunk) => { input += chunk; });
+      child.stdin.on("end", () => {
+        calls.push({ command, args, env: options.env, input });
+        child.stdout.end(JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "```json\n{\"outcome\":\"fail\",\"summary\":\"No evidence of a chat completion.\"}\n```" }));
+        setImmediate(() => child.emit("close", 0));
+      });
+      return child;
+    },
+  });
+
+  const decision = await judge.judge({ schemaVersion: 2, rubric: "r" });
+
+  assert.deepEqual(decision, { outcome: "fail", summary: "No evidence of a chat completion." });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "claude");
+  assert.equal(calls[0].input, JSON.stringify({ schemaVersion: 2, rubric: "r" }));
+  assert.deepEqual(calls[0].args.slice(0, 3), ["-p", "--model", "claude-test-model"]);
+  assert.ok(calls[0].args.includes("--tools") && calls[0].args.includes("--strict-mcp-config"));
+  assert.equal(calls[0].env.CLAUDE_CODE_OAUTH_TOKEN, "sk-ant-oat01-test");
+  assert.equal(calls[0].env.ANTHROPIC_API_KEY, undefined);
+});
+
+test("Anthropic JSON Judge reports a Claude Code failure as a provider failure", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { PassThrough } = await import("node:stream");
+  const judge = createAnthropicJsonJudge({
+    model: "claude-test-model",
+    apiKey: "sk-ant-oat01-test",
+    env: {},
+    spawn() {
+      const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), kill() {} });
+      child.stdin.resume();
+      child.stdin.on("end", () => {
+        child.stdout.end(JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "Not logged in · Please run /login" }));
+        setImmediate(() => child.emit("close", 0));
+      });
+      return child;
+    },
+  });
+
+  await assert.rejects(judge.judge({ schemaVersion: 2 }), { message: "Anthropic JSON Judge provider failed" });
+});
