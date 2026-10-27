@@ -135,6 +135,7 @@ test("the npm tarball installs a working CLI and Viewer", { timeout: 120_000 }, 
   const packagedPaths = new Set(packageMetadata.files.map(({ path }) => path));
   for (const path of [
     "LICENSE",
+    "CHANGELOG.md",
     "examples/copy-message/example.suite.mjs",
     "examples/concurrency-smoke/example.suite.mjs",
     ...["copy-alpha", "copy-beta", "copy-gamma"].flatMap(task => [
