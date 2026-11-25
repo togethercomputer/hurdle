@@ -21,6 +21,13 @@ Removing it from Git history is not sufficient.
 ## Execution boundary
 
 Native Local runs execute Agent code on the host with network access. They are
-not a security sandbox. The filesystem Result Store and loopback Viewer are the
-default preview path; E2B and Postgres remain opt-in beta backends. See the
+not a security sandbox, and a Local Agent can read every key in `.env.local`. The filesystem Result Store and loopback Viewer are the
+default preview path; Postgres remains an opt-in beta backend. See the
 [authoring guide](docs/authoring.md) for credential and evidence boundaries.
+
+Sandbox runs keep the Agent's own model credential and the Suite's API
+credential in the Guardian, a process on your machine; the Agent's VM holds
+only stand-ins. The sandbox has no network of its own and reaches the Guardian
+over one socket; see [the Together Hurdle socket](docs/together-socket.md).
+[Where credentials live](docs/sandbox-setup.md#where-credentials-live) lists
+each case.

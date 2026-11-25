@@ -5,7 +5,8 @@ export async function ensureSetupCredentials({ requirements, environment, intera
   const missing = requirements.filter(({ anyOf }) => !anyOf.some(name => nonblank(environment[name])));
   report.missingCredentials = missing;
   if (missing.length && !interactive) {
-    const names = missing.map(({ anyOf }) => anyOf.join(" or ")).join("; ");
+    // A sandbox and a Task can need the same key; name it once.
+    const names = [...new Set(missing.map(({ anyOf }) => anyOf.join(" or ")))].join("; ");
     throw Object.assign(new Error(`Missing credentials: ${names}. Set them in .env.local or the environment, then rerun setup. .env.local overrides the environment; use --interactive to enter missing values in a terminal.`), { code: "setup.credentials-missing" });
   }
   const entered = {};

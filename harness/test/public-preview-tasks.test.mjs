@@ -13,7 +13,6 @@ import { fileURLToPath } from "node:url";
 // ported files, not byte-identical legacy Judge inputs or score continuity.
 const prompts = {
   "chat-app": "087011650e7562fa3fefbd85092b1ae059e116e700fe2f02d36f8f3ec85f76ea",
-  "rag-search": "6e03fa3f56410dea026eacc4032da89d32e0b34abaee2b83b3fcde04fb9051f7",
   "tool-calling-agent-loop": "a60213cd8a2a18b016a4ffe5f4136b97f686a77bcbc448c28fd8b4d1a3d2a51d",
   "gpu-clusters": "c51271baa59f8c2e9356dda085fed98109cdb18efb3446375a8c8d8561aa1939",
   "vision-bench": "a9f6631a9266cfb9462aad574289f22c5f7f1bf5859ac4fe6e4f2a130c851a98",
@@ -21,7 +20,7 @@ const prompts = {
   "batch-job": "7d8e7eba6a7810e0f9b64da77e54d3ef808a06cdf62ee7a78444ec0a391d48bc",
   "finetune": "4b6dffb859b1a2580219a8d28930ef752438d2007eb8daa688d17abd99da72bd",
 };
-const defaultTasks = ["chat-app", "gpu-clusters", "rag-search", "tool-calling-agent-loop"];
+const defaultTasks = ["chat-app", "gpu-clusters", "tool-calling-agent-loop"];
 const catalogueOnlyTasks = ["batch-job", "finetune", "vision-bench", "voice-agent"];
 const fixtures = [
   ["chat-app", "harness/fixtures/sample-audio.wav", "27199da79537461580c481d1f094f4ef85125bc99a8d9169a15372b067574b37"],
@@ -52,7 +51,7 @@ function gitTree(directory) {
   return gitObject("tree", Buffer.concat(entries.flatMap(({ mode, name, id }) => [Buffer.from(`${mode} ${name}\0`), Buffer.from(id, "hex")])));
 }
 
-test("the Together catalogue preserves all eight ported legacy task prompts and fixture bytes", () => {
+test("the Together catalogue preserves all seven ported legacy task prompts and fixture bytes", () => {
   assert.deepEqual(readdirSync(new URL("tasks/", together)).sort(), Object.keys(prompts).sort());
   for (const [task, expected] of Object.entries(prompts)) {
     assert.equal(sha(readFileSync(new URL(`tasks/${task}/prompt.md`, together))), expected, task);
@@ -62,7 +61,7 @@ test("the Together catalogue preserves all eight ported legacy task prompts and 
   }
 });
 
-test("Together legacy Suite uses only four Judge tasks and the vendored Together skill", async (t) => {
+test("Together legacy Suite uses only three Judge tasks and the vendored Together skill", async (t) => {
   const suite = await resolveV1Suite({ suitePath: fileURLToPath(new URL("legacy.suite.mjs", together)) });
   t.after(() => suite.dispose());
   assert.equal(suite.ok, true, JSON.stringify(suite.diagnostics));
@@ -87,7 +86,7 @@ test("the vendored Together skill and LICENSE are the pinned upstream files", ()
   assert.equal(gitObject("blob", readFileSync(new URL("skills/LICENSE", together))), upstreamSkills.license);
 });
 
-test("all eight Tasks compile with the exact legacy decision rubric and original staged fixture paths", async (t) => {
+test("all seven Tasks compile with the exact legacy decision rubric and original staged fixture paths", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-legacy-catalogue-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   cpSync(new URL("tasks/", together), join(root, "tasks"), { recursive: true });
@@ -132,7 +131,6 @@ test("shipped Together Suites and task filters cannot enable catalogue-only Task
       createRunEngine: unexpectedEffect,
       createAgentAdapter: unexpectedEffect,
       createLocalExecutionEnvironment: unexpectedEffect,
-      createE2BExecutionEnvironment: unexpectedEffect,
       createAnthropicJsonJudge: unexpectedEffect,
       openLocalResultStore: unexpectedEffect,
       openPostgresResultStore: unexpectedEffect,

@@ -6,7 +6,6 @@ export default defineSuite({
     hosts: ["api.together.ai", "api.together.xyz"],
   },
   tasks: [
-    "./tasks/rag-search",
     "./tasks/tool-calling-agent-loop",
   ],
   agents: [{ runner: "claude-code", model: "claude-sonnet-4-6" }],

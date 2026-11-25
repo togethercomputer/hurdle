@@ -7,7 +7,6 @@ export default defineSuite({
   },
   tasks: [
     "./tasks/gpu-clusters",
-    "./tasks/rag-search",
     "./tasks/tool-calling-agent-loop",
     "./tasks/chat-app",
   ],

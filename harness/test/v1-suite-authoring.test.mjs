@@ -347,7 +347,7 @@ test("a Local API Task can require completion while observing unavailable HTTP e
   assert.doesNotMatch(transcript, /TEST-LOCAL-TARGET-CREDENTIAL/);
 });
 
-test("request blockers compile to E2B-only policy and fail on a blocked attempt", async (t) => {
+test("request blockers compile to sandbox-only policy and fail on a blocked attempt", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-v1-block-request-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
 

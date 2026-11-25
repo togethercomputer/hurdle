@@ -10,7 +10,7 @@ const LAUNCH_PATH = `${CONTROL_ROOT}/launch.json`;
 const RUNNER_PATH = `${CONTROL_ROOT}/run.mjs`;
 const ARTIFACT_DECLARATIONS = `${CONTROL_ROOT}/artifacts.json`;
 const ARTIFACT_MANIFEST = `${CONTROL_ROOT}/artifact-manifest.json`;
-const ARTIFACT_ROOT = `${CONTROL_ROOT}/sealed-artifacts`;
+export const ARTIFACT_ROOT = `${CONTROL_ROOT}/sealed-artifacts`;
 const ARTIFACT_HELPER = `${CONTROL_ROOT}/collect-artifacts.py`;
 const WORKSPACE_METADATA_HELPER = `${CONTROL_ROOT}/collect-workspace-metadata.py`;
 const WORKSPACE_METADATA_MANIFEST = `${CONTROL_ROOT}/workspace-metadata.json`;
@@ -336,7 +336,7 @@ PY`, {
   return selected;
 }
 
-function validateArtifactDeclarations(declarations) {
+export function validateArtifactDeclarations(declarations) {
   if (!Array.isArray(declarations) || declarations.length > 32) {
     throw new TypeError("Remote Linux Output Artifact declarations must be a bounded array");
   }
@@ -480,11 +480,14 @@ function markerPayload(stdout, marker) {
 
 // Kernel threads (PF_KTHREAD) appear with disk writeback, ignore signals and
 // never run Agent code; counting them made busy runs falsely non-quiescent.
+// Zombies hold no code either and cannot be signalled away: a sandbox whose
+// PID 1 does not reap orphans (Together's Pint) keeps one for every child a
+// killed Agent left behind, which would make every timed-out run non-quiescent.
 const PROCESS_START_TIME_PY = `def start_time(pid):
     try:
         with open(f"/proc/{pid}/stat", "r", encoding="ascii") as handle:
             suffix = handle.read().rsplit(")", 1)[1].split()
-        if int(suffix[6]) & 0x00200000:
+        if suffix[0] == "Z" or int(suffix[6]) & 0x00200000:
             return None
         return suffix[19]
     except (FileNotFoundError, PermissionError, IndexError, ValueError):
@@ -598,7 +601,7 @@ PY`, { timeoutMs: 10_000, user: "root" });
 }
 
 // Shared controller-owned staging, process census, and artifact sealing.
-// These paths retain the original E2B layout for template compatibility.
+// These paths retain the original sandbox layout for image compatibility.
 export function createLinuxSandboxOperations() {
   return Object.freeze({
     async stage(workload, input) {

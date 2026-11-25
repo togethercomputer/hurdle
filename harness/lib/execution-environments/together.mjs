@@ -11,17 +11,29 @@ import {
   reportExecutionProgress,
 } from "../execution-progress.mjs";
 import { deepFreeze, RunSelectionInputError } from "../run-model.mjs";
-import { createTogetherProvider } from "./together-provider.mjs";
+import { createTogetherSocketProvider } from "./together-socket-provider.mjs";
 import { randomBytes } from "node:crypto";
-import { validateSandboxEnvelope } from "./e2b.mjs";
+import { sealCredentialBindings } from "../sealed-credential-delivery.mjs";
+import {
+  agentCredentialStandIn,
+  assertCredentialRoutes,
+  prepareAgentCredentials,
+  withAgentCredentialStandIns,
+} from "../agent-credential-routes.mjs";
+import { assertExchangeFactCapturePolicy } from "./guardian.mjs";
 import { createTogetherGuardianController } from "./together-guardian.mjs";
-import { managedImageName } from "../managed-images.mjs";
 
+// A run uses Together's Hurdle API, which boots Together's own Hurdle image
+// over one socket. Together sizes that sandbox and ends it after 1 hour, so
+// the only setting is how long Hurdle plans to keep it.
+export const TOGETHER_MAX_LIFETIME_MS = 3_600_000;
 const DEFAULT_SETTINGS = Object.freeze({
-  snapshotAlias: managedImageName(["claude-code"], "together"),
-  cpuCount: 1,
-  memoryMiB: 2048,
-  maxLifetimeMs: 3_600_000,
+  maxLifetimeMs: TOGETHER_MAX_LIFETIME_MS,
+});
+// These were validated but never sent: the socket carries no sizing.
+const REMOVED_SETTINGS = Object.freeze({
+  cpuCount: "Together cpuCount is not supported: Together sizes its own sandbox. Remove cpuCount.",
+  memoryMiB: "Together memoryMiB is not supported: Together sizes its own sandbox. Remove memoryMiB.",
 });
 const HOST_LOCATORS = new Set([
   "PATH",
@@ -39,41 +51,22 @@ export function normalizeTogetherSettings(
     throw new RunSelectionInputError(
       "Together environment settings must be an object",
     );
-  for (const key of Object.keys(settings))
+  for (const key of Object.keys(settings)) {
+    if (Object.hasOwn(REMOVED_SETTINGS, key))
+      throw new RunSelectionInputError(REMOVED_SETTINGS[key]);
     if (!Object.hasOwn(DEFAULT_SETTINGS, key))
       throw new RunSelectionInputError(
         `unknown Together environment setting '${key}'`,
       );
+  }
   const selected = { ...defaults, ...structuredClone(settings) };
   if (
-    typeof selected.snapshotAlias !== "string" ||
-    !selected.snapshotAlias.trim() ||
-    selected.snapshotAlias.length > 256 ||
-    /^REPLACE_WITH_/i.test(selected.snapshotAlias)
+    !Number.isSafeInteger(selected.maxLifetimeMs) ||
+    selected.maxLifetimeMs < 1000 ||
+    selected.maxLifetimeMs > TOGETHER_MAX_LIFETIME_MS
   )
     throw new RunSelectionInputError(
-      "Together snapshotAlias must name a caller-owned snapshot",
-    );
-  for (const [key, minimum, maximum] of [
-    ["cpuCount", 1, 16],
-    ["memoryMiB", 1024, 131072],
-    ["maxLifetimeMs", 1000, 86400000],
-  ]) {
-    if (
-      !Number.isSafeInteger(selected[key]) ||
-      selected[key] < minimum ||
-      selected[key] > maximum
-    )
-      throw new RunSelectionInputError(
-        `Together ${key} must be an integer from ${minimum} to ${maximum}`,
-      );
-  }
-  if (
-    selected.memoryMiB < selected.cpuCount * 1024 ||
-    selected.memoryMiB > selected.cpuCount * 8192
-  )
-    throw new RunSelectionInputError(
-      "Together memoryMiB must be between 1024 and 8192 per CPU",
+      `Together maxLifetimeMs must be an integer from 1000 to ${TOGETHER_MAX_LIFETIME_MS}; Together ends every sandbox after 1 hour`,
     );
   return deepFreeze(selected);
 }
@@ -87,6 +80,17 @@ function active(signal) {
   if (signal?.aborted)
     throw Object.assign(new Error("cancelled"), { name: "AbortError" });
 }
+function defaultEntropy() {
+  return randomBytes(32).toString("base64url");
+}
+
+// Keeps the shape a CLI may inspect before sending: a key's non-secret
+// prefix (sk-ant-oat01-), or a JWT's header and claims with a fresh
+// signature. The shared Agent credential module makes every stand-in.
+export function agentCredentialSurrogate(value) {
+  return agentCredentialStandIn(value, defaultEntropy);
+}
+
 function noEgress(reason = "unsupported-platform") {
   return {
     status: "unavailable",
@@ -102,32 +106,129 @@ function noEgress(reason = "unsupported-platform") {
   };
 }
 
+export function validateSandboxEnvelope(envelope, providerName = "Together") {
+  if (!envelope || typeof envelope !== "object") {
+    throw new TypeError(`${providerName} execution requires an execution envelope`);
+  }
+  if (!Array.isArray(envelope.credentialBindings)) {
+    throw new TypeError(`${providerName} credential bindings must be an array`);
+  }
+  if (typeof envelope.workspaceArtifactMetadata !== "boolean") {
+    throw new TypeError(`${providerName} workspace metadata selection must be boolean`);
+  }
+  assertCredentialRoutes(envelope.launchPlan?.credentialRoutes, envelope.launchPlan?.env);
+  const routes = envelope.capture?.routes ?? [];
+  const blockedRequests = envelope.capture?.blockedRequests ?? [];
+  assertExchangeFactCapturePolicy(envelope.capture?.exchangeFacts);
+  const requestedProtocols = envelope.capture?.mode === "none"
+    ? []
+    : (envelope.capture?.protocols ?? ["http", "https"]);
+  if (
+    !Array.isArray(routes)
+    || routes.some((route) => (
+      typeof route?.host !== "string"
+      || !route.host
+      || !Array.isArray(route.selectedFields)
+      || route.selectedFields.length > 32
+      || route.selectedFields.some((field) => (
+        typeof field !== "string"
+        || !/^[a-z][a-z0-9-]{0,63}$/.test(field)
+      ))
+    ))
+  ) {
+    throw new TypeError(`${providerName} selected-field capture is not supported by this profile`);
+  }
+  if (
+    !Array.isArray(blockedRequests)
+    || blockedRequests.length > 128
+    || blockedRequests.some((rule) => (
+      !rule
+      || typeof rule !== "object"
+      || Array.isArray(rule)
+      || Object.keys(rule).length !== 3
+      || Object.keys(rule).some((key) => !["id", "method", "path"].includes(key))
+      || typeof rule.id !== "string"
+      || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(rule.id)
+      || typeof rule.method !== "string"
+      || !/^[A-Z]{1,16}$/.test(rule.method)
+      || typeof rule.path !== "string"
+      || !rule.path.startsWith("/")
+      || rule.path.includes("?")
+      || rule.path.includes("#")
+      || Buffer.byteLength(rule.path) > 4_096
+    ))
+    || new Set(blockedRequests.map(({ id }) => id)).size !== blockedRequests.length
+    || new Set(blockedRequests.map(({ method, path }) => `${method}\n${path}`)).size
+      !== blockedRequests.length
+  ) {
+    throw new TypeError(`${providerName} request blocking is not supported by this profile`);
+  }
+  const captureHosts = new Set(routes.map(({ host }) => host));
+  for (const binding of envelope.credentialBindings) {
+    const delivery = binding?.delivery;
+    if (delivery?.kind === "environment") continue;
+    if (
+      delivery?.kind !== "captured-http-header"
+      || !Array.isArray(delivery.hosts)
+      || delivery.hosts.length === 0
+      || delivery.hosts.some((host) => !captureHosts.has(host))
+      || !Array.isArray(delivery.headerNames)
+      || delivery.headerNames.length === 0
+    ) {
+      throw new TypeError(`${providerName} credential delivery is not supported by this capture profile`);
+    }
+  }
+  if (
+    !["none", "http-egress-metadata-v1", "network-egress-metadata-v1"].includes(
+      envelope.capture?.mode,
+    )
+    || !Array.isArray(requestedProtocols)
+    || requestedProtocols.some((protocol) => (
+      !["http", "https", "wss"].includes(protocol)
+    ))
+    || (
+      envelope.capture?.mode === "none"
+      && (
+        blockedRequests.length > 0
+        || envelope.credentialBindings.some(({ delivery }) => (
+          delivery.kind === "captured-http-header"
+        ))
+      )
+    )
+  ) {
+    throw new TypeError(`${providerName} capture request is not supported by this capture profile`);
+  }
+}
+
+function validProvider(provider) {
+  return ["acquire", "stage", "run", "collectArtifacts", "dispose", "isDisposed"]
+    .every((method) => typeof provider?.[method] === "function");
+}
+
+// `provider` serves every run when given; otherwise the Hurdle socket does.
 export function createTogetherExecutionEnvironment({
   apiKey,
-  provider = createTogetherProvider(),
+  provider: fixedProvider = null,
   guardian = createTogetherGuardianController(),
   defaults = DEFAULT_SETTINGS,
   captureMaxBytes = DEFAULT_CONTROLLER_CAPTURE_MAX_BYTES,
   progressObserver = null,
+  entropy = defaultEntropy,
 } = {}) {
   if (typeof apiKey !== "string" || !apiKey.trim())
     throw new TypeError("Together Execution Environment requires an API key");
+  if (typeof entropy !== "function")
+    throw new TypeError("Together Execution Environment entropy must be a function");
   if (["prepare", "attach", "seal"].some((method) => typeof guardian?.[method] !== "function"))
     throw new TypeError("Together Execution Environment requires a Guardian controller");
-  for (const method of [
-    "acquire",
-    "stage",
-    "run",
-    "collectArtifacts",
-    "dispose",
-    "isDisposed",
-  ])
-    if (typeof provider?.[method] !== "function")
-      throw new TypeError("Together Execution Environment requires a provider");
+  if (fixedProvider !== null && !validProvider(fixedProvider))
+    throw new TypeError("Together Execution Environment requires a provider");
+  const provider = fixedProvider ?? createTogetherSocketProvider();
   const normalizedDefaults = normalizeTogetherSettings(defaults);
   const progress = normalizeExecutionProgressObserver(progressObserver);
+  // The socket provider reports workspace metadata.
   const metadataSupported =
-    typeof provider.collectWorkspaceArtifactMetadata === "function";
+    !fixedProvider || typeof fixedProvider.collectWorkspaceArtifactMetadata === "function";
   return Object.freeze({
     id: "together",
     capabilities: Object.freeze([
@@ -158,26 +259,29 @@ export function createTogetherExecutionEnvironment({
         throw new TypeError(
           "Together workspace artifact metadata is unsupported by this provider",
         );
+      const settings = normalizeTogetherSettings(envelope.settings, normalizedDefaults);
+      // The socket carries no credential into the sandbox; the Guardian
+      // delivers every one on the Task's API hosts.
+      const credentialBindings = sealCredentialBindings(envelope, { sandboxName: "Together" });
       return withExecutionCredentialValues(
         envelope,
         async (credentialValues) => {
-          const settings = normalizeTogetherSettings(
-            envelope.settings,
-            normalizedDefaults,
-          );
           const stdout = createBoundedControllerCapture(captureMaxBytes);
           const stderr = createBoundedControllerCapture(captureMaxBytes);
           const integrityIssues = [];
           const captureRequired = envelope.capture.mode !== "none";
           const egressCollections = [noEgress(captureRequired ? "capture-failed" : "unsupported-platform")];
           const resources = [];
-          let captureResource;
           let guardianSession;
-          const workloadCredentials = Object.fromEntries(envelope.credentialBindings.map(({ environmentName, delivery }) => [
+          const workloadCredentials = Object.fromEntries(credentialBindings.map(({ environmentName, delivery }) => [
             environmentName, delivery.kind === "captured-http-header"
               ? `tae_surrogate_${randomBytes(32).toString("base64url")}`
               : credentialValues[environmentName],
           ]));
+          // The Agent Adapter declares where its own model credential may go;
+          // the controller-host Guardian keeps the real value and the workload
+          // receives only a stand-in.
+          const agentSubstitutions = prepareAgentCredentials(envelope.launchPlan, entropy);
           let resource;
           let process = null;
           let phase = "acquire";
@@ -204,37 +308,28 @@ export function createTogetherExecutionEnvironment({
             );
           try {
             active(envelope.signal);
-            const allocatedAt = Date.now();
-            if (captureRequired) {
-              reportStatus("starting-guardian");
-              captureResource = await provider.acquire({
-                ...settings, cpuCount: 1, memoryMiB: 2048, role: "capture", apiKey,
-                signal: envelope.signal,
-              });
-              resources.push(captureResource);
-              reportExecutionProgress(progress, {
-                kind: "environment-resource-allocated", executionId: envelope.executionId,
-                environmentId: "together", resource: {
-                  provider: "together", role: "guardian", id: captureResource.sandboxId,
-                },
-              });
-              active(envelope.signal);
-              phase = "setup";
-              guardianSession = await guardian.prepare({
-                sandbox: captureResource, capture: envelope.capture,
-                credentialBindings: envelope.credentialBindings, credentialValues,
-                surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
-                signal: envelope.signal,
-              });
-              active(envelope.signal);
-              reportStatus("guardian-started");
-              phase = "acquire";
-            }
+            // All workload egress crosses the controller-host Guardian, so it
+            // runs for every task; capture policy applies to capture hosts only.
+            reportStatus("starting-guardian");
+            phase = "setup";
+            guardianSession = await guardian.prepare({
+              capture: envelope.capture,
+              credentialBindings, credentialValues,
+              surrogates: workloadCredentials, profile: "external-guardian-http-metadata-v1",
+              agentCredentials: agentSubstitutions,
+              maxLifetimeMs: settings.maxLifetimeMs,
+              signal: envelope.signal,
+            });
+            active(envelope.signal);
+            reportStatus("guardian-started");
+            phase = "acquire";
             reportStatus("starting-sandbox");
+            const allocatedAt = Date.now();
             resource = await provider.acquire({
               ...settings,
-              captureBridge: captureRequired,
               apiKey,
+              // Together's Hurdle API hands the Guardian CA to the sandbox.
+              caCertificate: guardianSession.caCertificate,
               signal: envelope.signal,
             });
             resources.push(resource);
@@ -256,11 +351,9 @@ export function createTogetherExecutionEnvironment({
               ...settings,
               signal: envelope.signal,
             });
-            if (captureRequired) {
-              await guardian.attach({ workload: resource, sandbox: captureResource,
-                session: guardianSession, signal: envelope.signal });
-              active(envelope.signal);
-            }
+            await guardian.attach({ workload: resource,
+              session: guardianSession, signal: envelope.signal });
+            active(envelope.signal);
             try {
               await executeAgent(envelope, async (program) => {
                 try {
@@ -304,7 +397,7 @@ export function createTogetherExecutionEnvironment({
                     },
                     environment: {
                       ...Object.fromEntries(
-                        Object.entries(plan.env ?? {}).filter(
+                        Object.entries(withAgentCredentialStandIns(plan, agentSubstitutions)).filter(
                           ([name]) => !HOST_LOCATORS.has(name),
                         ),
                       ),
@@ -326,16 +419,14 @@ export function createTogetherExecutionEnvironment({
                   });
                   active(envelope.signal);
                   reportStatus("collecting-results");
-                  if (captureRequired) {
-                    phase = "seal";
-                    try {
-                      egressCollections[0] = await guardian.seal({
-                        sandbox: captureResource, session: guardianSession,
-                      });
-                    } catch {
+                  phase = "seal";
+                  try {
+                    egressCollections[0] = await guardian.seal({ session: guardianSession });
+                  } catch {
+                    // Without capture hosts the journal is diagnostic only.
+                    if (captureRequired)
                       integrityIssues.push(issue("environment.egress-seal-failed", "seal",
-                        "External Together egress evidence could not be sealed."));
-                    }
+                        "Together egress evidence could not be sealed."));
                   }
                   if (!process.quiescent)
                     integrityIssues.push(

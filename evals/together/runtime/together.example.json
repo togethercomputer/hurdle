@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "environment": {
+    "kind": "together",
+    "apiKeyEnv": "TOGETHER_API_KEY",
+    "settings": {
+      "maxLifetimeMs": 600000
+    }
+  },
+  "resultStore": {
+    "kind": "local",
+    "root": "../../../.hurdle/together-results-v1"
+  },
+  "judge": {
+    "kind": "anthropic-json-v1",
+    "model": "claude-opus-4-8",
+    "credentialEnv": "ANTHROPIC_API_KEY"
+  },
+  "viewer": {
+    "port": 3000
+  }
+}

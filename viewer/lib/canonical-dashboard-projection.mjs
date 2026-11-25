@@ -9,6 +9,7 @@ function versionId(record) {
 }
 
 import { projectRunCost } from "./run-cost.mjs";
+import { isTaskApiCall, taskApiHosts } from "./api-calls.mjs";
 import { projectAgentUsage, readTranscriptAgentUsage } from "./session-usage.mjs";
 
 import { projectEvaluatorSourceSummaries } from "./canonical-results.mjs";
@@ -265,6 +266,9 @@ async function togetherRequests(reader, record) {
   if (record.state !== "complete") return { rows: [], truncated: false };
   const projected = [];
   let truncated = false;
+  // The Viewer shows only the Task's API calls. The Agent's own traffic is
+  // skipped before the row limit, so it cannot push the Task's calls out.
+  const taskHosts = taskApiHosts(record.snapshot);
   outer:
   for (const entry of record.evidence?.egress ?? []) {
     const reference = entry.status === "captured" ? entry.content : null;
@@ -288,7 +292,7 @@ async function togetherRequests(reader, record) {
       ) continue;
       for (const request of body.requests) {
         const row = projectRequest(request);
-        if (!row) continue;
+        if (!row || !isTaskApiCall(row.host, taskHosts)) continue;
         if (projected.length >= MAX_CANONICAL_DASHBOARD_REQUESTS) {
           truncated = true;
           break outer;

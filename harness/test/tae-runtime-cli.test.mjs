@@ -15,7 +15,6 @@ import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
 
 import { createFrameworkCli } from "../bin/hurdle.mjs";
-import { createE2BExecutionEnvironment } from "../lib/execution-environments/e2b.mjs";
 import { reportExecutionProgress } from "../lib/execution-progress.mjs";
 import { resolveV1Suite } from "../lib/v1-authoring.mjs";
 
@@ -108,14 +107,14 @@ test("hurdle run displays live cell progress in terminals and stable lines in lo
             assert.ok(output().includes(`[${index + 1}/2] sample · baseline`), "progress must appear before the run returns");
             assert.match(output(), /Evaluating/);
             if (index === 0) {
-              for (const [provider, role, id] of [["e2b", "guardian", "guardian-one"], ["e2b", "agent", "agent-one"], ["together", "guardian", "together-guardian-one"], ["together", "agent", "together-one"]]) {
+              for (const [provider, role, id] of [["together", "guardian", "together-guardian-one"], ["together", "agent", "together-one"]]) {
                 reportExecutionProgress(progressObserver, {
                   kind: "environment-resource-allocated", executionId: "execution-one", environmentId: provider,
                   resource: { provider, role, id, agentToken: "must-not-display" },
                 });
               }
               assert.doesNotMatch(output(), /guardian-one|agent-one|together-one|together-guardian-one|Dashboard|Inspect|together-sandbox sandboxes get/);
-              for (const provider of ["e2b", "together"]) {
+              for (const provider of ["together"]) {
                 for (const [status, label] of [
                   ["starting-guardian", "Starting Guardian"], ["guardian-started", "Guardian started"],
                   ["starting-sandbox", "Starting sandbox"], ["sandbox-started", "Sandbox started"],
@@ -169,7 +168,7 @@ test("hurdle run displays live cell progress in terminals and stable lines in lo
     assert.match(output(), /! \[2\/2\] sample · baseline · Codex · incomplete/);
     assert.equal(output().match(/environment\.nonzero-exit/g)?.length, 1, "passing cells omit reasons and the summary does not duplicate live reasons");
     assert.doesNotMatch(output(), /must-not-display|Observer failure|run-failed/);
-    assert.equal(events.length, 29, "the existing observer still receives every event");
+    assert.equal(events.length, 18, "the existing observer still receives every event");
     if (!isTTY) {
       assert.equal(streams.read().stderr, "");
       assert.doesNotMatch(streams.read().stdout, /\u001b|\r|[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
@@ -283,40 +282,6 @@ test("hurdle run stops its startup spinner when the Result Store cannot open", a
   }
 });
 
-test("E2B template placeholders are rejected before execution or Judge requests", async (t) => {
-  const root = mkdtempSync(join(tmpdir(), "tae-placeholder-preflight-"));
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  writeJudgePack(root);
-  for (const key of ["workloadTemplate", "guardianTemplate"]) {
-    writeFileSync(join(root, "runtime.json"), JSON.stringify({
-      schemaVersion: 1,
-      environment: { kind: "e2b", apiKeyEnv: "E2B_API_KEY", settings: { [key]: "REPLACE_WITH_CALLER_OWNED_CLAUDE_E2B_TEMPLATE" } },
-      resultStore: { kind: "local", root: "results" },
-      judge: { kind: "anthropic-json-v1", model: "judge-model", credentialEnv: "ANTHROPIC_API_KEY" },
-    }));
-    let executions = 0, judgeCalls = 0;
-    const cli = createFrameworkCli({
-    async checkAgentReadiness() { return { ok: true, checks: [] }; },
-      env: { E2B_API_KEY: "test-e2b-key", ANTHROPIC_API_KEY: "test-judge-key" },
-      processTarget: new EventEmitter(),
-      assertRuntimeDependencies() {},
-      createE2BExecutionEnvironment(input) {
-        return { ...createE2BExecutionEnvironment(input), async execute() { executions++; throw new Error("must not execute"); } };
-      },
-      createAnthropicJsonJudge() {
-        return { id: "anthropic-json-v1", model: "judge-model", inputSchemaVersions: [2], maxTimeoutMs: 120_000,
-          async judge() { judgeCalls++; throw new Error("must not judge"); } };
-      },
-    });
-    const streams = ttyIo(root);
-    assert.equal(await cli.main(["run", "example.suite.mjs", "--runtime", "runtime.json", "--agent", "claude-code"], streams), 2);
-    assert.match(streams.read().stderr, new RegExp(`E2B ${key} is an example placeholder.*valid template`));
-    assert.equal(executions, 0);
-    assert.equal(judgeCalls, 0);
-    assert.doesNotMatch(JSON.stringify(streams.read()), /test-e2b-key|test-judge-key/);
-  }
-});
-
 test("hurdle run preflights authority before resolving secrets or opening Postgres", async (t) => {
   const root = mkdtempSync(join(tmpdir(), "tae-runtime-mismatch-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -324,9 +289,9 @@ test("hurdle run preflights authority before resolving secrets or opening Postgr
   writeFileSync(join(root, "runtime.json"), `${JSON.stringify({
     schemaVersion: 1,
     environment: {
-      kind: "e2b",
-      apiKeyEnv: "TEST_E2B_KEY",
-      settings: { workloadTemplate: "controlled-e2b:v1" },
+      kind: "together",
+      apiKeyEnv: "TEST_TOGETHER_KEY",
+      settings: { maxLifetimeMs: 120_000 },
     },
     resultStore: {
       kind: "postgres",
@@ -394,8 +359,51 @@ test("without a Runtime file, hurdle run judges with the Suite's Judge model", a
   const exit = await cli.main(["run", "example.suite.mjs", "--agent", "claude-code", "--store", "results"], streams);
 
   assert.equal(exit, 0, streams.read().stderr);
-  assert.deepEqual(judgeConfig, { model: "suite-judge-model", apiKey: "test-judge-key" });
+  const { onFailure, ...config } = judgeConfig;
+  assert.deepEqual(config, { model: "suite-judge-model", apiKey: "test-judge-key" });
+  assert.equal(typeof onFailure, "function");
   assert.ok(engineJudge);
+});
+
+test("without a Runtime file, an OAuth-only environment judges through CLAUDE_CODE_OAUTH_TOKEN and reports why the Judge failed", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "tae-runtime-oauth-judge-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeJudgePack(root, "suite-judge-model");
+  let judgeConfig = null;
+  const reason = "Claude Code (claude) is not installed or not on PATH; the Judge needs it for an OAuth token.";
+  const cli = createFrameworkCli({
+    async checkAgentReadiness({ judgeCredentialName }) {
+      assert.equal(judgeCredentialName, "CLAUDE_CODE_OAUTH_TOKEN");
+      return { ok: true, checks: [] };
+    },
+    env: { CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-test-token" },
+    processTarget: new EventEmitter(),
+    createAnthropicJsonJudge(config) {
+      judgeConfig = config;
+      return { id: "anthropic-json-v1", model: config.model, inputSchemaVersions: [2], maxTimeoutMs: 120_000, async judge() {} };
+    },
+    createRunEngine() {
+      return { async run() {
+        // The same reason twice is reported once.
+        judgeConfig.onFailure(reason);
+        judgeConfig.onFailure(reason);
+        const result = completedResult();
+        result.summary.authorityCoverage = { ...result.summary.authorityCoverage, judgeCompletedRuns: 0 };
+        return result;
+      } };
+    },
+  });
+  const streams = io(root);
+
+  const exit = await cli.main(["run", "example.suite.mjs", "--agent", "claude-code", "--store", "results"], streams);
+
+  assert.equal(exit, 0, streams.read().stderr);
+  assert.equal(judgeConfig.apiKey, "sk-ant-oat01-test-token");
+  const stdout = stripVTControlCharacters(streams.read().stdout);
+  assert.match(stdout, /^  Judge\s+0\/1 completed$/m);
+  assert.equal(stdout.split(reason).length - 1, 1, stdout);
+  assert.match(stdout, /^  Judge issue\s+Claude Code \(claude\) is not installed or not on PATH/m);
+  assert.doesNotMatch(stdout, /sk-ant-oat01-test-token/);
 });
 
 test("hurdle run composes Postgres sidecar and the required Judge after preflight", async (t) => {
@@ -451,10 +459,13 @@ test("hurdle run composes Postgres sidecar and the required Judge after prefligh
     connectionString: "postgresql://secret-database",
     localArtifactRoot: join(root, "artifacts"),
   }]);
-  assert.deepEqual(calls[1], ["judge", {
+  const { onFailure, ...judgeConfig } = calls[1][1];
+  assert.equal(calls[1][0], "judge");
+  assert.equal(typeof onFailure, "function");
+  assert.deepEqual(judgeConfig, {
     model: "judge-model",
     apiKey: "secret-judge-key",
-  }]);
+  });
   assert.equal(calls[2][0], "engine");
   assert.equal(calls[2][1].resultStore, store);
   assert.equal(calls[2][1].judge, judge);
@@ -471,9 +482,9 @@ test("a configured but disabled Judge does not read credentials or create a prov
   writeFileSync(join(root, "runtime.json"), `${JSON.stringify({
     schemaVersion: 1,
     environment: {
-      kind: "e2b",
-      apiKeyEnv: "TEST_E2B_KEY",
-      settings: { workloadTemplate: "controlled-e2b:v1" },
+      kind: "together",
+      apiKeyEnv: "TEST_TOGETHER_KEY",
+      settings: { maxLifetimeMs: 120_000 },
     },
     resultStore: { kind: "local", root: "results" },
     judge: {
@@ -488,19 +499,18 @@ test("a configured but disabled Judge does not read credentials or create a prov
   const env = new Proxy({}, {
     get(_target, name) {
       if (name === "MISSING_JUDGE_KEY") credentialRead = true;
-      if (name === "TEST_E2B_KEY") return "e2b-secret";
+      if (name === "TEST_TOGETHER_KEY") return "together-secret";
       return undefined;
     },
   });
-  const environment = Object.freeze({ kind: "controlled-e2b" });
+  const environment = Object.freeze({ kind: "controlled-together" });
   const cli = createFrameworkCli({
     async checkAgentReadiness() { return { ok: true, checks: [] }; },
     env,
     executionProgressObserver,
-    assertRuntimeDependencies() {},
     async openLocalResultStore() { return Object.freeze({}); },
-    createE2BExecutionEnvironment(input) {
-      assert.equal(input.apiKey, "e2b-secret");
+    createTogetherExecutionEnvironment(input) {
+      assert.equal(input.apiKey, "together-secret");
       assert.equal(typeof input.progressObserver.observe, "function");
       return environment;
     },
@@ -510,9 +520,7 @@ test("a configured but disabled Judge does not read credentials or create a prov
       assert.equal(input.executionEnvironment, environment);
       assert.equal(typeof input.progressObserver.observe, "function");
       return { async run(runInput) {
-        assert.deepEqual(runInput.environmentSettings, {
-          workloadTemplate: "controlled-e2b:v1",
-        });
+        assert.deepEqual(runInput.environmentSettings, { maxLifetimeMs: 120_000 });
         const result = completedResult();
         result.summary.authorityCoverage.judgeCompletedRuns = 0;
         result.summary.authorityCoverage.judgeRequiredRuns = 0;
@@ -693,7 +701,7 @@ test("hurdle run --view opens the recorded Local store and preserves a non-pass"
   result.summary.nonPasses = [{
     id: "run_failed", snapshotFingerprint: "sha256:example", verdict: "incomplete",
     invocation: { repeatOrdinal: 1 },
-    verdictReasons: [{ code: "environment.acquire-failed", summary: "E2B execution failed before evidence capture." }],
+    verdictReasons: [{ code: "environment.acquire-failed", summary: "Sandbox execution failed before evidence capture." }],
   }];
   const cli = createFrameworkCli({
     async checkAgentReadiness() { return { ok: true, checks: [] }; },
@@ -728,7 +736,7 @@ test("hurdle run --view opens the recorded Local store and preserves a non-pass"
   assert.equal(calls[0].onboarding.commands, "npx hurdle run --environment local --store results --view");
   assert.match(streams.read().stdout, /^  Result\s+Needs attention$/m);
   assert.match(streams.read().stdout, /^  Runs\s+1 incomplete$/m);
-  assert.match(streams.read().stdout, /^  Reason\s+E2B execution failed before evidence capture\.$/m);
+  assert.match(streams.read().stdout, /^  Reason\s+Sandbox execution failed before evidence capture\.$/m);
   assert.doesNotMatch(streams.read().stdout, /run_failed|sha256:/);
   assert.match(streams.read().stdout, /URL\s+http:\/\/127\.0\.0\.1:3000/);
 });

@@ -1598,6 +1598,15 @@ test("malformed Agent Adapter launch plans reject as a contract defect", async (
   for (const launchPlan of [
     {},
     { command: process.execPath, args: [1] },
+    {
+      command: process.execPath,
+      env: { AGENT_KEY: "agent-secret" },
+      credentialRoutes: [{
+        environmentName: "UNDECLARED_KEY",
+        hosts: ["api.example.com"],
+        headerNames: ["authorization"],
+      }],
+    },
   ]) {
     const store = await openLocalResultStore({
       root: join(root, `results-${randomUUID()}`),

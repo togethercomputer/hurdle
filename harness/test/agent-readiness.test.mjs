@@ -4,7 +4,7 @@ import { chmodSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { checkAgentReadiness, probeAgentCli } from "../lib/agent-readiness.mjs";
+import { checkAgentReadiness, probeAgentCli, probeAgentCliVersion } from "../lib/agent-readiness.mjs";
 import { createFrameworkCli } from "../bin/hurdle.mjs";
 import { createClaudeCodeAdapter } from "../lib/agent-adapters/claude-code.mjs";
 import { resolveV1Suite } from "../lib/v1-authoring.mjs";
@@ -71,8 +71,27 @@ test("OpenAI key probes follow the Codex adapter's precedence and never infer", 
   assert.equal(checked.checks.filter(value => value.code.startsWith("auth.")).length, 1);
 });
 
+test("a Codex ChatGPT access token is ignored, and alone it is no credential", async () => {
+  const alone = await checkAgentReadiness(input({ CODEX_ACCESS_TOKEN: "chatgpt-token" }, "codex"), {
+    probeCli: async () => true,
+    fetch() { assert.fail("A ChatGPT access token must not be probed"); },
+  });
+  assert.equal(alone.ok, false);
+  assert.ok(alone.checks.some(value => value.code === "auth.access-token-unsupported" && value.status === "warning"));
+  assert.ok(alone.checks.some(value => value.code === "auth.missing" && /CODEX_API_KEY or OPENAI_API_KEY/.test(value.message)));
+  const withKey = await checkAgentReadiness(input({ CODEX_ACCESS_TOKEN: "chatgpt-token", OPENAI_API_KEY: "selected" }, "codex"), {
+    probeCli: async () => true,
+    fetch: async (_url, options) => {
+      assert.equal(options.headers.authorization, "Bearer selected");
+      return success();
+    },
+  });
+  assert.equal(withKey.ok, true);
+  assert.match(JSON.stringify(withKey), /OpenAI · OPENAI_API_KEY verified/);
+});
+
 test("subscription credentials report presence without claiming live verification", async () => {
-  for (const [adapter, name] of [["claude-code", "CLAUDE_CODE_OAUTH_TOKEN"], ["codex", "CODEX_ACCESS_TOKEN"]]) {
+  for (const [adapter, name] of [["claude-code", "CLAUDE_CODE_OAUTH_TOKEN"]]) {
     const checked = await checkAgentReadiness(input({ [name]: "configured-token", OPENAI_API_KEY: "ignored" }, adapter), {
       probeCli: async () => true,
       fetch() { throw new Error("Subscription tokens must not be sent to API-key endpoints"); },
@@ -115,15 +134,14 @@ test("network failures, forbidden checks, and provider errors are not called inv
 });
 
 test("remote readiness diagnoses account failures and blocks unconfigured stores except during sandbox setup", async () => {
-  for (const provider of ["e2b", "together"]) for (const mode of ["connection", "schema", "sandbox-setup"]) {
+  for (const provider of ["together"]) for (const mode of ["connection", "schema", "sandbox-setup"]) {
     const checked = await checkAgentReadiness({
       ...input({ CLAUDE_CODE_OAUTH_TOKEN: "token", REMOTE_KEY: "sandbox-key", DATABASE_URL: "postgres-secret" }),
       runtimeProfile: { environment: { kind: provider, apiKeyEnv: "REMOTE_KEY" }, resultStore: { kind: "postgres", databaseUrlEnv: "DATABASE_URL" } },
       allowResultStoreSetup: mode === "sandbox-setup",
     }, {
       probeCli() { assert.fail("Local executable does not establish remote readiness"); },
-      checkE2b: async key => { assert.equal(key, "sandbox-key"); return { status: "pass", message: "account accessible" }; },
-      checkTogetherSandbox: async key => { assert.equal(key, "sandbox-key"); return { status: "pass", message: "account accessible" }; },
+      findHostGuardian: () => ({}),
       checkPostgres: async value => { assert.equal(value, "postgres-secret"); return mode === "connection"
         ? { status: "fail", message: "connection unavailable" }
         : { status: "warning", code: "postgres.setup-required", message: "schema upgrade required" }; },
@@ -133,55 +151,9 @@ test("remote readiness diagnoses account failures and blocks unconfigured stores
     assert.equal(store.status, mode === "sandbox-setup" ? "warning" : "fail");
     const remote = checked.checks.find(value => value.code === "agent.remote-unverified");
     assert.equal(remote.status, "skip");
-    assert.equal(remote.message, `Claude Code runs inside the ${provider === "together" ? "Together" : "E2B"} sandbox; no local CLI installation needed.`);
+    assert.equal(remote.message, "Claude Code runs inside the Together sandbox; no local CLI installation needed.");
+    assert.equal(checked.checks.find(value => value.code === "runtime.together").status, "skip");
     assert.doesNotMatch(JSON.stringify(checked), /postgres-secret|availability will be checked/);
-  }
-});
-
-test("Hurdle-built sandbox images must hold the selected Agents and current CLIs", async () => {
-  const remote = {
-    probeCli() { assert.fail("Remote readiness does not probe a local CLI"); },
-    fetch: async () => success(),
-    checkE2b: async () => ({ status: "pass", message: "account accessible" }),
-    checkTogetherSandbox: async () => ({ status: "pass", message: "account accessible" }),
-  };
-  const check = async (kind, settings, adapterId) => {
-    const checked = await checkAgentReadiness({
-      ...input({ OPENAI_API_KEY: "key", ANTHROPIC_API_KEY: "key", REMOTE_KEY: "key" }, adapterId),
-      runtimeProfile: { environment: { kind, apiKeyEnv: "REMOTE_KEY", settings }, resultStore: { kind: "local" } },
-      suite: "evals/codex.suite.mjs",
-    }, remote);
-    return { ok: checked.ok, image: checked.checks.filter(value => value.code.startsWith("runtime.image")) };
-  };
-
-  let checked = await check("e2b", { workloadTemplate: "hurdle-claude-code:v1" }, "codex");
-  assert.equal(checked.ok, false);
-  assert.equal(checked.image[0].code, "runtime.image-agent-missing");
-  assert.match(checked.image[0].message, /E2B template hurdle-claude-code:v1 has no Codex CLI/);
-  assert.match(checked.image[0].message, /setup evals\/codex\.suite\.mjs --sandbox e2b` to build hurdle-claude-code-codex:v2/);
-
-  checked = await check("e2b", { workloadTemplate: "hurdle-codex:v1" }, "codex");
-  assert.equal(checked.ok, true, "an older CLI still runs");
-  assert.equal(checked.image[0].status, "warning");
-  assert.equal(checked.image[0].code, "runtime.image-outdated");
-  assert.match(checked.image[0].message, /to build hurdle-codex:v2/);
-
-  checked = await check("together", { snapshotAlias: "hurdle-claude-code-codex-network@v1" }, "claude-code");
-  assert.equal(checked.image[0].code, "runtime.image-outdated");
-  assert.match(checked.image[0].message, /Together snapshot .* --sandbox together` to build hurdle-claude-code-codex-network@v2/);
-
-  // The default Together snapshot holds only Claude Code.
-  assert.equal((await check("together", undefined, "codex")).image[0].code, "runtime.image-agent-missing");
-  for (const [kind, settings, adapterId] of [
-    ["e2b", { workloadTemplate: "hurdle-codex:v2" }, "codex"],
-    ["e2b", { workloadTemplate: "hurdle-claude-code:v1" }, "claude-code"],
-    ["e2b", { workloadTemplate: "my-codex-template:v1" }, "codex"],
-    ["e2b", {}, "codex"],
-    ["together", undefined, "claude-code"],
-    ["together", { snapshotAlias: "my-snapshot@v1" }, "codex"],
-  ]) {
-    checked = await check(kind, settings, adapterId);
-    assert.deepEqual(checked, { ok: true, image: [] }, JSON.stringify(settings));
   }
 });
 
@@ -298,7 +270,8 @@ test("init --agent codex creates a valid Codex starter and gives the right crede
   assert.match(text, /Auth      .env.local or shell/);
   let guidance = "";
   await cli.main(["help", "init"], { ...io, stdout: { write(v) { guidance += v; } } });
-  assert.match(guidance, /Codex uses CODEX_ACCESS_TOKEN/);
+  assert.match(guidance, /Codex uses CODEX_API_KEY or/);
+  assert.doesNotMatch(guidance, /CODEX_ACCESS_TOKEN/);
   const suite = await resolveV1Suite({ suitePath: join(root, "evals/example.suite.mjs") });
   t.after(() => suite.dispose());
   assert.equal(suite.ok, true);
@@ -343,4 +316,100 @@ test("readiness symbols use run colors and respect NO_COLOR and redirected outpu
     if (original === undefined) delete process.env.NO_COLOR;
     else process.env.NO_COLOR = original;
   }
+});
+
+test("Together readiness requires the controller-host Guardian except during setup", async () => {
+  const dependencies = (installed) => ({
+    probeCli() { assert.fail("Remote readiness does not probe a local CLI"); },
+    fetch: async () => success(),
+    findHostGuardian: () => installed ? {} : null,
+  });
+  const check = (installed, allowHostGuardianSetup = false) => checkAgentReadiness({
+    ...input({ ANTHROPIC_API_KEY: "key", REMOTE_KEY: "key" }),
+    runtimeProfile: { environment: { kind: "together", apiKeyEnv: "REMOTE_KEY" }, resultStore: { kind: "local" } },
+    allowHostGuardianSetup,
+  }, dependencies(installed));
+  const missing = await check(false);
+  assert.equal(missing.ok, false);
+  const guardian = missing.checks.find(({ code }) => code === "runtime.host-guardian");
+  assert.equal(guardian.status, "fail");
+  assert.match(guardian.message, /Run .*setup/);
+  assert.equal((await check(true)).checks.find(({ code }) => code === "runtime.host-guardian").status, "pass");
+  assert.equal((await check(false, true)).checks.some(({ code }) => code === "runtime.host-guardian"), false);
+});
+
+test("an OAuth Judge needs a recent enough Claude Code on this machine, even when the Agent runs in the Together sandbox", async () => {
+  const token = "sk-ant-oat01-test-judge-token";
+  const together = { environment: { kind: "together", apiKeyEnv: "REMOTE_KEY" }, resultStore: { kind: "local" } };
+  for (const [runtimeProfile, adapterId] of [[together, "claude-code"], [together, "codex"], [profile, "claude-code"], [profile, "codex"]]) {
+    for (const [host, ok, code, message] of [
+      [{ installed: true, version: "2.1.296" }, true, "auth.token-unverified", /runs Claude Code \(claude\) on this machine \(Claude Code 2\.1\.296\); live validity unverified\./],
+      [{ installed: true, version: "2.1.288" }, true, "auth.token-unverified", /\(Claude Code 2\.1\.288\)/],
+      [{ installed: true, version: "2.1.287" }, false, "judge.claude-outdated", /needs Claude Code 2\.1\.288 or newer; found 2\.1\.287\. Update Claude Code \(`claude update`\), or give the Judge an Anthropic API key\./],
+      [{ installed: true, version: "1.9.999" }, false, "judge.claude-outdated", /found 1\.9\.999/],
+      [{ installed: true, version: null }, false, "judge.claude-outdated", /found a version it could not read/],
+      [{ installed: false, version: null }, false, "judge.claude-missing", /claude is missing or could not start\. Install Claude Code and ensure it is on PATH, or give the Judge an Anthropic API key\./],
+    ]) {
+      const versionProbes = [];
+      const checked = await checkAgentReadiness({
+        runtimeProfile,
+        agentSelections: [{ adapterId }],
+        runtimeEnv: { ANTHROPIC_API_KEY: "test-agent-key", CODEX_API_KEY: "test-codex-key", REMOTE_KEY: "test-sandbox-key", CLAUDE_CODE_OAUTH_TOKEN: token },
+        judgeCredentialName: "CLAUDE_CODE_OAUTH_TOKEN",
+      }, {
+        probeCli: async () => true,
+        probeCliVersion: async command => { versionProbes.push(command); return host; },
+        listCodexModels: async () => [],
+        findHostGuardian: () => ({}),
+        fetch: async (_url, options) => {
+          assert.doesNotMatch(JSON.stringify(options.headers), /sk-ant-oat01/, "An OAuth token must never reach an API-key endpoint");
+          return success();
+        },
+      });
+      const label = `${runtimeProfile.environment.kind} ${adapterId} ${JSON.stringify(host)}`;
+      assert.deepEqual(versionProbes, ["claude"], label);
+      const judge = checked.checks.find(check => check.message.startsWith("Judge · CLAUDE_CODE_OAUTH_TOKEN"));
+      assert.equal(checked.ok, ok, label);
+      assert.equal(judge.code, code, label);
+      assert.equal(judge.status, ok ? "warning" : "fail", label);
+      assert.match(judge.message, message, label);
+      const remote = checked.checks.find(check => check.code === "agent.remote-unverified");
+      if (remote && adapterId === "claude-code") assert.equal(remote.message, "Claude Code runs inside the Together sandbox.", label);
+      assert.doesNotMatch(JSON.stringify(checked), /sk-ant-oat01-test-judge-token/);
+    }
+  }
+});
+
+test("the host Claude Code version probe reads the version without credentials", async (t) => {
+  const bin = mkdtempSync(join(tmpdir(), "hurdle-version-probe-"));
+  t.after(() => rmSync(bin, { recursive: true, force: true }));
+  for (const [name, script] of [
+    ["claude", '#!/bin/sh\n[ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] || exit 9\necho "2.1.288 (Claude Code)"\n'],
+    ["claude-garbled", "#!/bin/sh\necho 'Claude Code dev build'\n"],
+    ["claude-broken", "#!/bin/sh\nexit 1\n"],
+  ]) {
+    writeFileSync(join(bin, name), script);
+    chmodSync(join(bin, name), 0o755);
+  }
+  const env = { PATH: `${bin}:/usr/bin:/bin`, CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-must-not-pass" };
+  assert.deepEqual(await probeAgentCliVersion("claude", env), { installed: true, version: "2.1.288" });
+  assert.deepEqual(await probeAgentCliVersion("claude-garbled", env), { installed: true, version: null });
+  assert.deepEqual(await probeAgentCliVersion("claude-broken", env), { installed: false, version: null });
+  assert.deepEqual(await probeAgentCliVersion("claude-missing", env), { installed: false, version: null });
+});
+
+test("an API-key Judge on Together does not probe a local Claude Code", async () => {
+  const checked = await checkAgentReadiness({
+    runtimeProfile: { environment: { kind: "together", apiKeyEnv: "REMOTE_KEY" }, resultStore: { kind: "local" } },
+    agentSelections: [{ adapterId: "claude-code" }],
+    runtimeEnv: { ANTHROPIC_API_KEY: "test-agent-key", REMOTE_KEY: "test-sandbox-key", JUDGE_KEY: "test-judge-key" },
+    judgeCredentialName: "JUDGE_KEY",
+  }, {
+    probeCli() { assert.fail("An API-key Judge on Together needs no local CLI"); },
+    findHostGuardian: () => ({}),
+    fetch: async () => success(),
+  });
+  assert.equal(checked.ok, true);
+  assert.equal(checked.checks.find(check => check.code === "agent.remote-unverified").message, "Claude Code runs inside the Together sandbox; no local CLI installation needed.");
+  assert.ok(checked.checks.some(check => check.message === "Anthropic · JUDGE_KEY verified."));
 });

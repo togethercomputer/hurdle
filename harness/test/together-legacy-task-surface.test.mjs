@@ -13,53 +13,26 @@ const togetherRoot = fileURLToPath(new URL("../../evals/together/", import.meta.
 const legacyRoot = join(togetherRoot, "legacy");
 const legacySuite = join(togetherRoot, "legacy.suite.mjs");
 const legacySmokeSuite = join(togetherRoot, "legacy-smoke.suite.mjs");
-const legacySmokeLocalRuntime = join(
-  togetherRoot,
-  "runtime",
-  "legacy-smoke-e2b-local.example.json",
-);
-const legacySmokePostgresRuntime = join(
-  togetherRoot,
-  "runtime",
-  "legacy-smoke-e2b-postgres.example.json",
-);
-test("legacy smoke Runtime examples keep E2B fixed while selecting either Result Store", () => {
-  const local = resolveRuntimeProfile({
-    runtimePath: legacySmokeLocalRuntime,
-    cwd: togetherRoot,
-  });
-  const postgres = resolveRuntimeProfile({
-    runtimePath: legacySmokePostgresRuntime,
+const togetherRuntime = join(togetherRoot, "runtime", "together.example.json");
+test("the Together Runtime example selects Together's Hurdle image and a local Result Store", () => {
+  const profile = resolveRuntimeProfile({
+    runtimePath: togetherRuntime,
     cwd: togetherRoot,
   });
 
-  assert.deepEqual(local.environment, postgres.environment);
-  assert.deepEqual(local.judge, postgres.judge);
-  assert.deepEqual(local.environment, {
-    kind: "e2b",
-    apiKeyEnv: "E2B_API_KEY",
-    settings: {
-      workloadTemplate: "REPLACE_WITH_CALLER_OWNED_CLAUDE_E2B_TEMPLATE",
-      guardianTemplate: "base",
-      cpuCount: 2,
-      memoryMiB: 2048,
-      maxLifetimeMs: 3_600_000,
-    },
+  assert.deepEqual(profile.environment, {
+    kind: "together",
+    apiKeyEnv: "TOGETHER_API_KEY",
+    settings: { maxLifetimeMs: 600_000 },
   });
-  assert.deepEqual(local.resultStore, {
+  assert.deepEqual(profile.resultStore, {
     kind: "local",
-    root: resolve(togetherRoot, "../../.hurdle/legacy-smoke-local-results-v1"),
+    root: resolve(togetherRoot, "../../.hurdle/together-results-v1"),
   });
-  assert.deepEqual(postgres.resultStore, {
-    kind: "postgres",
-    databaseUrlEnv: "HURDLE_RESULT_STORE_DATABASE_URL",
-    artifactRoot: resolve(togetherRoot, "../../.hurdle/legacy-smoke-postgres-artifacts"),
-  });
-  assert.deepEqual(local.judge, {
+  assert.deepEqual(profile.judge, {
     kind: "anthropic-json-v1",
     model: "claude-opus-4-8",
     credentialEnv: "ANTHROPIC_API_KEY",
   });
-  assert.equal(local.viewer.port, 3000);
-  assert.equal(postgres.viewer.port, 3001);
+  assert.equal(profile.viewer.port, 3000);
 });

@@ -27,13 +27,12 @@
   },
   "type": "commonjs",
   "dependencies": {
-    "pg": "^8.23.0"
-  },
-  "optionalDependencies": {
-    "e2b": "^2.38.2",
-    "https-proxy-agent": "7.0.6",
-    "together-sandbox": "4.1.1",
+    "pg": "^8.23.0",
     "ws": "8.21.1"
+  },
+  "devDependencies": {
+    "https-proxy-agent": "7.0.6",
+    "undici": "6.29.1"
   },
   "private": true
 }

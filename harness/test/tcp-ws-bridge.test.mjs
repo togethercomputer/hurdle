@@ -242,7 +242,7 @@ test("TCP-over-WebSocket bridge preserves sequential and large binary streams", 
   }
 });
 
-test("Together bridge uses per-cell authentication without an SDK or E2B traffic token", async () => {
+test("Together bridge uses per-cell authentication without an SDK or traffic token", async () => {
   const echo = net.createServer(socket => socket.pipe(socket));
   const targetPort = await listen(echo);
   const guardianPort = await freePort(), agentPort = await freePort();
@@ -599,33 +599,33 @@ test("selective agent proxy routes exact Together destinations without cumulativ
 
 async function reverseFixture(t, upstream) {
   const targetPort = await listen(upstream);
-  const guardianPort = await freePort(), agentPort = await freePort(), controlPort = await freePort();
+  const agentPort = await freePort(), controlPort = await freePort();
   const token = randomBytes(32).toString('base64url');
-  const guardian = startBridge('server', { EGRESS_BRIDGE_CELL_TOKEN: token,
-    EGRESS_BRIDGE_LISTEN_PORT: String(guardianPort), EGRESS_BRIDGE_TARGET_PORT: String(targetPort) });
+  // No selective proxy and no guardian URL: every flow is claimed by the
+  // controller, which pipes it into the controller-host Guardian over TCP.
   const agent = startBridge('reverse-client', { EGRESS_BRIDGE_CELL_TOKEN: token,
-    EGRESS_BRIDGE_URL: `ws://127.0.0.1:${guardianPort}/proxy`,
     EGRESS_BRIDGE_TRAFFIC_HEADER: 'none', EGRESS_BRIDGE_LISTEN_PORT: String(agentPort),
     EGRESS_BRIDGE_PUBLIC_LISTEN_PORT: String(controlPort) });
   let relay;
   const sockets = new Set();
   upstream.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
   t.after(async () => {
-    relay?.close(); await stopBridge(agent); await stopBridge(guardian);
+    relay?.close(); await stopBridge(agent);
     for (const socket of sockets) socket.destroy();
-    await new Promise(resolve => upstream.close(resolve));
+    if (upstream.listening) await new Promise(resolve => upstream.close(resolve));
   });
-  await waitReady(guardian); await waitReady(agent);
+  await waitReady(agent);
   // Both listeners must be live, regardless of which READY line arrives first.
   while (!agent.getStdout().includes('READY client') || !agent.getStdout().includes('READY reverse'))
     await new Promise(resolve => setTimeout(resolve, 10));
   const { startTogetherControllerRelay } = await import('../lib/execution-environments/together-controller-relay.mjs');
   const connect = async (cellToken = token, signal) => {
-    relay = await startTogetherControllerRelay({ cellToken, signal,
-      workloadUrl: `ws://127.0.0.1:${controlPort}`, guardianUrl: `ws://127.0.0.1:${guardianPort}/proxy` });
+    relay = await startTogetherControllerRelay({ cellToken, signal, sandboxToken: 'sandbox-token',
+      workloadUrl: `ws://127.0.0.1:${controlPort}`,
+      openUpstream: () => net.connect({ host: '127.0.0.1', port: targetPort }) });
     return relay;
   };
-  return { connect, agentPort, agent, guardian };
+  return { connect, agentPort, agent, upstream, sockets };
 }
 
 test('Together controller reverse relay preserves parallel binary streams and fails closed on cancellation', async t => {
@@ -655,8 +655,8 @@ test('Together controller reverse relay drains a large final response before EOF
 test('Together controller relay marks a missing Guardian leg unhealthy and rejects the workload flow', async t => {
   const fixture = await reverseFixture(t, net.createServer(socket => socket.pipe(socket)));
   const relay = await fixture.connect();
-  await stopBridge(fixture.guardian);
-  await assert.rejects(roundTrip(fixture.agentPort, Buffer.from('missing guardian')), /closed/);
+  await new Promise(resolve => fixture.upstream.close(resolve));
+  await assert.rejects(roundTrip(fixture.agentPort, Buffer.from('missing guardian')), /closed|ECONNRESET/);
   assert.throws(() => relay.assertHealthy(), /authenticated transport/);
 });
 

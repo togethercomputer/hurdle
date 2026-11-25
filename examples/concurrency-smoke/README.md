@@ -5,7 +5,7 @@ Task reads its own fixture and writes `answer.txt`; exact-content checks keep
 outputs distinct. One Agent, one baseline Condition and one repeat produce
 three evaluation cells. The Suite uses code checks and artifact capture.
 
-Create the example in your project, then use the default E2B sandbox:
+Create the example in your project, then run it in the Together sandbox:
 
 ```sh
 npx hurdle init concurrent-tasks --example concurrency-smoke
@@ -13,11 +13,10 @@ npx hurdle setup concurrent-tasks
 npx hurdle run concurrent-tasks --view
 ```
 
-Provide your Claude Code authentication and `E2B_API_KEY` in `.env.local`.
-The run uses up to three workload VMs, each with its own Guardian VM. This Suite
-makes no target API requests and uses no Judge. Agent and sandbox usage follows
-the selected Runtime. To use Together sandbox instead, add `--sandbox together`
-to setup and provide `TOGETHER_API_KEY`; it then uses up to three VMs.
+Provide your Claude Code authentication and `TOGETHER_API_KEY` in `.env.local`.
+The run uses up to three sandbox VMs, with one Guardian process on your machine
+per active cell. This Suite makes no target API requests and uses no Judge.
+Agent and sandbox usage follows the selected Runtime.
 
 From the Hurdle repository, you can run the bundled example directly:
 

@@ -6,8 +6,6 @@ import { fileURLToPath } from "node:url";
 
 import { createClaudeCodeAdapter } from "../lib/agent-adapters/claude-code.mjs";
 import { createCodexAdapter } from "../lib/agent-adapters/codex.mjs";
-import { assertRuntimeDependencies, BackendDependencyError } from "../lib/backend-dependencies.mjs";
-import { createE2BExecutionEnvironment, normalizeE2BSettings } from "../lib/execution-environments/e2b.mjs";
 import { createTogetherExecutionEnvironment, normalizeTogetherSettings } from "../lib/execution-environments/together.mjs";
 import { createLocalExecutionEnvironment } from "../lib/execution-environments/local.mjs";
 import { ANTHROPIC_JSON_JUDGE_ID, createAnthropicJsonJudge } from "../lib/judges/anthropic-json.mjs";
@@ -23,6 +21,7 @@ import { createRunEngine } from "../lib/run-engine.mjs";
 import { DEFAULT_RUN_CONCURRENCY, normalizeRunConcurrency } from "../lib/run-concurrency.mjs";
 import {
   RuntimeProfileError,
+  judgeCredentialEnvironment,
   describeRuntimeJudgeCapability,
   resolveRuntimeProfile,
   resolveRuntimeSecrets,
@@ -37,10 +36,11 @@ import {
 import { initializeSuite, STARTER_AGENT_MODELS } from "../lib/starter-suite.mjs";
 import { isAgentEffort } from "../lib/agent-effort.mjs";
 import { checkAgentReadiness } from "../lib/agent-readiness.mjs";
-import { projectRuntimePath, setupSandbox } from "../lib/sandbox-setup.mjs";
+import { projectRuntimePath } from "../lib/project-paths.mjs";
 import { setupTogetherSandbox } from "../lib/together-sandbox-setup.mjs";
 import { setupPostgresStore } from "../lib/postgres-setup.mjs";
 import { createSetupOutput } from "../lib/setup-output.mjs";
+import { ignoreProjectFiles } from "../lib/setup-project-files.mjs";
 import { createViewerOnboarding } from "../lib/viewer-onboarding.mjs";
 import { defaultProjectSuite, discoverProjectSuites, resolveProjectSuite } from "../lib/project-suites.mjs";
 import { selectSuiteAgents } from "../lib/suite-agent-selection.mjs";
@@ -48,7 +48,7 @@ import { discoverModels, selectCatalogModels, ModelDiscoveryError } from "../lib
 import {
   terminalUsesColor, paintTerminal as paintRunOutput, terminalFact as runFact,
   terminalHeader, terminalMark, terminalStatus, terminalNote, terminalNext, suiteCommand, quoteCommandArgument, cliExecutable,
-  runtimeSummaryRows,
+  runtimeSummaryRows, suiteKeyRoutes, suiteKeyRows,
 } from "../lib/terminal-output.mjs";
 
 const FIRST_PARTY_AGENT_ADAPTERS = Object.freeze({
@@ -128,9 +128,7 @@ const PRODUCTION_DEPENDENCIES = Object.freeze({
   closePostgresResultStore,
   createRunEngine,
   createLocalExecutionEnvironment,
-  createE2BExecutionEnvironment,
   createTogetherExecutionEnvironment,
-  assertRuntimeDependencies,
   createAnthropicJsonJudge,
   resolveV1Suite,
   launchViewer: launchFirstPartyViewer,
@@ -188,13 +186,13 @@ const HELP_TEXT = Object.freeze({
     "Create a starter evaluation. The default directory is `evals`.",
     "The destination must not already exist; its parent directory must exist.",
     "Starters pin Claude Opus 5.5 or GPT-6.1 Sol with medium reasoning effort.",
+    "Init adds .env.local, .hurdle/ and .tae/ to .gitignore in the current directory.",
     "",
     "Credentials come from .env.local or exported environment variables.",
     "Interactive Agent logins are not inherited. Claude Code uses",
-    "ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; Codex uses CODEX_ACCESS_TOKEN,",
-    "CODEX_API_KEY, or OPENAI_API_KEY. Codex access tokens come from a ChatGPT",
-    "Business or Enterprise workspace. Together API also needs TOGETHER_API_KEY,",
-    "plus E2B_API_KEY for the default E2B sandbox.",
+    "ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; Codex uses CODEX_API_KEY or",
+    "OPENAI_API_KEY (OpenAI API keys only). Together API and the Together sandbox",
+    "need TOGETHER_API_KEY.",
     "",
     "Options:",
     "  --agent ID         Choose Claude Code (default) or Codex",
@@ -210,12 +208,9 @@ const HELP_TEXT = Object.freeze({
     "Configure the project Runtime: sandbox execution or result storage.",
     "",
     "Options:",
-    "  --sandbox PROVIDER     e2b (default) or together",
-    "  --template NAME        Reuse an E2B template",
-    "  --snapshot ALIAS       Reuse a Together snapshot",
+    "  --sandbox together     Configure the Together sandbox (default)",
     "  --store postgres       Configure Postgres storage separately",
-    "  --yes                  Allow a missing image to be built",
-    "  --interactive          Prompt for credentials and build approval",
+    "  --interactive          Prompt for credentials",
     "  --json                 Emit one JSON result",
     "  -h, --help             Show this help",
   ].join("\n"),
@@ -242,7 +237,7 @@ const HELP_TEXT = Object.freeze({
     "  hurdle runtime [--runtime FILE] [--json]",
     "",
     "Show the project Runtime: execution, storage, Judge and Viewer settings.",
-    "Execution is Local, E2B sandbox or Together sandbox.",
+    "Execution is Local or Together sandbox.",
     "Uses the project Runtime saved by setup, or the built-in Local default.",
     "Reads configuration only; does not load credentials or contact services.",
     "Suite and command-line overrides apply when running an evaluation.",
@@ -291,7 +286,7 @@ const HELP_TEXT = Object.freeze({
     "",
     "Runtime:",
     "  --runtime FILE              Use a Runtime Profile",
-    "  --environment local|e2b|together     Override execution",
+    "  --environment local|together Override execution",
     "  --environment-settings JSON Configure execution with a JSON object",
     "  --store DIR                 Save results to a local directory",
     "",
@@ -375,8 +370,7 @@ function projectSuiteHelp(command, cwd, selectedSuite = null) {
   const heading = example ? `Examples using ${suiteSelection(example)}:` : "Examples after creating a Suite with init:";
   if (command === "setup") {
     const examples = [
-      [`${executable} setup ${selection}`, "E2B sandbox (default)"],
-      [`${executable} setup ${selection} --sandbox together`, "Together sandbox"],
+      [`${executable} setup ${selection}`, "Together sandbox"],
       [`${executable} setup --store postgres`, "Postgres storage (separate step)"],
       [`${executable} run ${selection} --view`, "Run the evaluation"],
     ];
@@ -635,8 +629,7 @@ function readRuntimeInfo(runtimePath, cwd) {
   const runtime = resolveRuntimeProfile({ runtimePath: runtimePath ?? projectRuntimePath(cwd) ?? undefined, cwd });
   const { environment } = runtime;
   try {
-    const settings = environment.kind === "together" ? normalizeTogetherSettings(environment.settings)
-      : environment.kind === "e2b" ? normalizeE2BSettings(environment.settings) : environment.settings;
+    const settings = environment.kind === "together" ? normalizeTogetherSettings(environment.settings) : environment.settings;
     return { ...runtime, environment: { ...environment, settings } };
   } catch (error) {
     if (!(error instanceof RunSelectionInputError)) throw error;
@@ -693,11 +686,11 @@ function runtimeInfoRows(runtime, cwd) {
   const { environment, resultStore } = runtime;
   const { settings } = environment;
   const rows = runtimeSummaryRows(runtime, cwd);
-  if (environment.kind !== "local") {
-    rows.push(environment.kind === "together" ? ["Snapshot", settings.snapshotAlias] : ["Template", settings.workloadTemplate]);
-    if (environment.kind === "e2b") rows.push(["Guardian", settings.guardianTemplate]);
+  if (environment.kind === "together") {
+    rows.push(["Image", "Together's Hurdle image"]);
     const lifetime = settings.maxLifetimeMs % 60_000 === 0 ? `${settings.maxLifetimeMs / 60_000}m` : `${settings.maxLifetimeMs / 1000}s`;
-    rows.push(["Limits", `${settings.cpuCount} ${plural(settings.cpuCount, "CPU")} · ${settings.memoryMiB} MiB · ${lifetime} max`]);
+    // Together sizes its own image.
+    rows.push(["Limits", `${lifetime} max`]);
   }
   if (resultStore.kind === "postgres") {
     rows.push(["Database", `${resultStore.databaseUrlEnv} (environment variable)`], ["Artifacts", displayPath(resultStore.artifactRoot)]);
@@ -829,8 +822,8 @@ function parseRunArguments(args, io, { validation = false } = {}) {
     if (!values.model.trim()) return argumentError("--model requires a nonblank model ID.", io);
     values.model = values.model.trim();
   }
-  if (!["local", "e2b", "together"].includes(values.environment)) {
-    return argumentError("Execution Environment must be 'local', 'e2b', or 'together'.", io);
+  if (!["local", "together"].includes(values.environment)) {
+    return argumentError("Execution Environment must be 'local' or 'together'.", io);
   }
   if (
     values.runtime === null
@@ -838,6 +831,14 @@ function parseRunArguments(args, io, { validation = false } = {}) {
     && Object.keys(values.environmentSettings).length > 0
   ) {
     return argumentError("Local Execution Environment settings must be empty.", io);
+  }
+  if (values.runtime === null && values.environment === "together") {
+    try {
+      normalizeTogetherSettings(values.environmentSettings);
+    } catch (error) {
+      if (!(error instanceof RunSelectionInputError)) throw error;
+      return argumentError(`--environment-settings: ${error.message.replace(/\.?$/, ".")}`, io);
+    }
   }
   if (values.runtime !== null && values.explicitTopology.size > 0) {
     return argumentError(
@@ -1084,37 +1085,41 @@ async function runCliMain(argv, io, dependencies) {
     }
     const suite = `${directory.replace(/\/$/, "")}/example.suite.mjs`;
     const useColor = runOutputUsesColor(io);
+    // The Local quickstart never runs setup, so init keeps .env.local out of git too.
+    let ignored;
+    try {
+      ignored = await ignoreProjectFiles(io.cwd) ? "Added .env.local and .hurdle/ to .gitignore" : null;
+    } catch {
+      ignored = "Could not update .gitignore; add /.env.local and /.hurdle/ to it yourself";
+    }
     io.stdout.write(terminalHeader(io.stdout)
       + terminalStatus("pass", "Evaluation created", io.stdout) + "\n"
       + runFact("Suite", suite, { useColor })
       + runFact("Agent", AGENT_LABELS[agent], { useColor })
       + runFact("Model", model, { useColor })
       + runFact("Effort", effort, { useColor })
-      + (example === "together-api" ? runFact("Needs", "E2B sandbox + TOGETHER_API_KEY", { useColor }) : "")
+      + (example === "together-api" ? runFact("Needs", "Together sandbox + TOGETHER_API_KEY", { useColor }) : "")
       + runFact("Auth", `.env.local or shell · see ${cliExecutable(io.cwd)} help init`, { useColor })
-      + runFact("Usage", example === "together-api" ? "Agent, E2B sandbox, and Together API may be billed" : "Agent may be billed", { useColor })
+      + (ignored ? runFact("Git", ignored, { useColor }) : "")
+      + runFact("Usage", example === "together-api" ? "Agent, Together sandbox, and Together API may be billed" : "Agent may be billed", { useColor })
       + terminalNext([
-        suiteCommand(example === "together-api" ? "setup" : "validate", suite, { cwd: io.cwd }),
+        example === "together-api" ? suiteCommand("setup", suite, { cwd: io.cwd }) : suiteCommand("validate", suite, { cwd: io.cwd }),
         suiteCommand("run", suite, { view: true, cwd: io.cwd }),
       ], io.stdout));
     return 0;
   }
 
   if (command === "setup") {
-    const options = { suite: defaultSuiteArgument(io.cwd), sandbox: "e2b", template: undefined, yes: false, interactive: false, json: args.includes("--json") };
+    const options = { suite: defaultSuiteArgument(io.cwd), sandbox: "together", yes: false, interactive: false, json: args.includes("--json") };
     const setupArgumentError = message => {
       const executable = projectExecutable(io.cwd);
-      const sandboxIndex = args.findIndex(value => value.replace(/^-+/, "--") === "--sandbox");
-      const requestedSandbox = sandboxIndex >= 0 ? args[sandboxIndex + 1] : null;
-      const provider = ["e2b", "together"].includes(requestedSandbox) ? requestedSandbox
-        : ["e2b", "together"].includes(options.sandbox) ? options.sandbox : "e2b";
       let suites = [];
       try { suites = discoverProjectSuites(io.cwd); } catch { /* Explicit paths and help still work. */ }
       const example = suites.find(suite => suite.path === options.suite || suite.name === options.suite)
         ?? suites.find(suite => !suite.bundled) ?? suites[0];
       const selection = example ? quoteCommandArgument(suiteSelection(example)) : "evals/example.suite.mjs";
       const commands = [
-        `${executable} setup ${selection} --sandbox ${provider}`,
+        `${executable} setup ${selection}`,
         `${executable} setup --store postgres`,
       ];
       if (options.json) {
@@ -1127,7 +1132,7 @@ async function runCliMain(argv, io, dependencies) {
     const seen = new Set();
     for (let index = 0; index < args.length; index++) {
       const arg = args[index];
-      if (["--yes", "--json", "--interactive", "--sandbox", "--template", "--snapshot", "--store"].includes(arg)) {
+      if (["--yes", "--json", "--interactive", "--sandbox", "--store"].includes(arg)) {
         if (seen.has(arg)) return setupArgumentError(`Option '${arg}' may only be supplied once.`);
         seen.add(arg);
         if (["--yes", "--json", "--interactive"].includes(arg)) options[arg.slice(2)] = true;
@@ -1140,7 +1145,7 @@ async function runCliMain(argv, io, dependencies) {
         options.suite = arg; seen.add("suite");
       } else {
         const normalized = arg.replace(/^-+/, "--");
-        const suggestion = ["--sandbox", "--template", "--snapshot", "--store", "--yes", "--json", "--interactive"].includes(normalized)
+        const suggestion = ["--sandbox", "--store", "--yes", "--json", "--interactive"].includes(normalized)
           ? ` Use '${normalized}' with two dashes.` : " Run help setup to see supported options.";
         const combined = args.some(value => value.replace(/^-+/, "--") === "--store") && args.includes("--sandbox")
           ? " Sandbox and storage must be configured in separate commands." : "";
@@ -1151,13 +1156,10 @@ async function runCliMain(argv, io, dependencies) {
     if (options.interactive && (!(io.stdin ?? process.stdin).isTTY || !io.stdout.isTTY)) {
       return setupArgumentError("--interactive requires a terminal. Configure credentials in .env.local or the environment instead.");
     }
-    if (!["e2b", "together"].includes(options.sandbox)) return setupArgumentError("Sandbox provider must be e2b or together.");
-    if (options.template && options.sandbox !== "e2b") return setupArgumentError("Use --snapshot ALIAS for Together, or drop --sandbox together to use --template NAME with E2B.");
-    if (options.snapshot && (options.sandbox !== "together" || !/^[A-Za-z0-9][A-Za-z0-9_.\/@:-]*$/.test(options.snapshot))) return setupArgumentError("Use --sandbox together --snapshot ALIAS to select a Together snapshot.");
-    if (options.template && !/^[A-Za-z0-9][A-Za-z0-9_./:-]*$/.test(options.template)) return setupArgumentError("Use an E2B template ID or name, optionally with a tag.");
+    if (options.sandbox !== "together") return setupArgumentError("Sandbox provider must be together.");
     if (options.store !== undefined) {
       if (options.store !== "postgres") return setupArgumentError("Use --store postgres to configure database storage.");
-      if (seen.has("--sandbox") || seen.has("--template") || seen.has("--snapshot")) {
+      if (seen.has("--sandbox")) {
         return setupArgumentError("--store postgres cannot be combined with sandbox options. Configure the sandbox first, then Postgres storage; both settings are saved in the same Runtime.");
       }
     }
@@ -1165,7 +1167,7 @@ async function runCliMain(argv, io, dependencies) {
     if (!selected.ok) return selected.exitCode;
     options.suite = selected.suite;
     if (options.store) return setupPostgresStore(options, io, dependencies);
-    return options.sandbox === "together" ? setupTogetherSandbox(options, io, dependencies) : setupSandbox(options, io, dependencies);
+    return setupTogetherSandbox(options, io, dependencies);
   }
 
   if (command === "run" || command === "validate") {
@@ -1279,11 +1281,11 @@ async function runCliMain(argv, io, dependencies) {
         runtimeProfile = Object.freeze({
           ...builtIn,
           ...(judgeModels.length === 1 ? {
-            judge: Object.freeze({ kind: ANTHROPIC_JSON_JUDGE_ID, model: judgeModels[0], credentialEnv: "ANTHROPIC_API_KEY" }),
+            judge: Object.freeze({ kind: ANTHROPIC_JSON_JUDGE_ID, model: judgeModels[0], credentialEnv: judgeCredentialEnvironment(dependencies.env) }),
           } : {}),
           environment: Object.freeze({
             kind: options.environment,
-            ...(options.environment === "e2b" ? { apiKeyEnv: "E2B_API_KEY" } : options.environment === "together" ? { apiKeyEnv: "TOGETHER_API_KEY" } : {}),
+            ...(options.environment === "together" ? { apiKeyEnv: "TOGETHER_API_KEY" } : {}),
             settings: structuredClone(options.environmentSettings),
           }),
           resultStore: Object.freeze({
@@ -1305,7 +1307,7 @@ async function runCliMain(argv, io, dependencies) {
         "environment.trusted-egress-capture", "environment.trusted-request-blocking",
       ].includes(requirement))
     ))) {
-      writeError(io, `hurdle [runtime.capture-required] Selected Tasks require trusted API capture or request blocking. Run \`${suiteCommand("setup", options.suite, { cwd: io.cwd })}\` to configure E2B sandbox, or select an E2B or Together Runtime with --runtime. No evaluation started.\n`);
+      writeError(io, `hurdle [runtime.capture-required] Selected Tasks require trusted API capture or request blocking. Run \`${suiteCommand("setup", options.suite, { cwd: io.cwd })}\` to configure the Together sandbox, or select a Together Runtime with --runtime. No evaluation started.\n`);
       disposeAuthoredSuite();
       return 1;
     }
@@ -1337,18 +1339,6 @@ async function runCliMain(argv, io, dependencies) {
     const authorityNeedsJudge = Object.values(authoritySelection.value.byTaskId).some(
       (authority) => authority?.judge?.availability === "required",
     );
-    if (
-      options.runtime === null
-      && runtimeProfile.environment.kind === "e2b"
-      && (
-        typeof dependencies.env.E2B_API_KEY !== "string"
-        || !dependencies.env.E2B_API_KEY.trim()
-      )
-    ) {
-      const exitCode = argumentError("--environment e2b requires E2B_API_KEY.", io).exitCode;
-      disposeAuthoredSuite();
-      return exitCode;
-    }
     let runtimeSecrets;
     try {
       runtimeSecrets = resolveRuntimeSecrets(
@@ -1356,9 +1346,8 @@ async function runCliMain(argv, io, dependencies) {
         dependencies.env,
         { judge: authorityNeedsJudge },
       );
-      dependencies.assertRuntimeDependencies(runtimeProfile);
     } catch (error) {
-      if (!(error instanceof RuntimeProfileError || error instanceof BackendDependencyError)) throw error;
+      if (!(error instanceof RuntimeProfileError)) throw error;
       writeError(io, `hurdle [${error.code}] ${error.message}\n`);
       disposeAuthoredSuite();
       return 2;
@@ -1366,16 +1355,13 @@ async function runCliMain(argv, io, dependencies) {
     const selectedCredentialNames = new Set(selectedTaskIds.flatMap((taskId) => (
       resolvedPlan.value.definition.tasks[taskId].credentialRequirements
     )));
-    const agentVisibleCredentialNames = new Set(selectedTaskIds.flatMap((taskId) => {
-      const task = resolvedPlan.value.definition.tasks[taskId];
-      return task.credentialRequirements.filter((name) => (
-        task.credentialDeliveryOverrides?.[name]
-          ?? resolvedPlan.value.definition.credentialRequirements[name]?.delivery
-          ?? { kind: "environment" }
-      ).kind === "environment");
-    }));
+    const keyRoutes = suiteKeyRoutes(resolvedPlan.value.definition, selectedTaskIds, runtimeProfile.environment);
+    const agentVisibleCredentialNames = new Set(keyRoutes.filter(({ agentVisible }) => agentVisible).map(({ name }) => name));
     if (validation) {
-      for (const [label, value] of runtimeSummaryRows(runtimeProfile, io.cwd, { inline: options.explicitTopology.size > 0 })) {
+      for (const [label, value] of [
+        ...runtimeSummaryRows(runtimeProfile, io.cwd, { inline: options.explicitTopology.size > 0 }),
+        ...suiteKeyRows(keyRoutes),
+      ]) {
         io.stdout.write(runFact(label, value, { useColor: runOutputUsesColor(io) }));
       }
     }
@@ -1425,7 +1411,7 @@ async function runCliMain(argv, io, dependencies) {
       const services = [
         "Agent",
         ...(authorityNeedsJudge ? ["Judge"] : []),
-        ...(runtimeProfile.environment.kind === "e2b" ? ["E2B"] : runtimeProfile.environment.kind === "together" ? ["Together sandbox"] : []),
+        ...(runtimeProfile.environment.kind === "together" ? ["Together sandbox"] : []),
         ...(selectedCredentialNames.size > 0 ? ["external API"] : []),
       ];
       const serviceText = services.length === 1
@@ -1448,7 +1434,8 @@ async function runCliMain(argv, io, dependencies) {
         + runtimeSummaryRows(runtimeProfile, io.cwd, { inline: options.explicitTopology.size > 0 }).map(([label, value]) => planFact(label, value)).join("")
         + planFact("Concurrency", String(options.concurrency))
         + planFact("Scoring", scoringLabel(authorities))
-        + planFact("Usage", `${serviceText} may be billed`),
+        + planFact("Usage", `${serviceText} may be billed`)
+        + suiteKeyRows(keyRoutes).map(([label, value]) => planFact(label, value)).join(""),
       );
       if (agentVisibleCredentialNames.size > 0) {
         io.stdout.write(
@@ -1589,6 +1576,8 @@ async function runCliMain(argv, io, dependencies) {
     let result;
     let storeCloseFailed = false;
     let executionFailed = false;
+    // Short, fixed Judge failure reasons; run records keep only the code.
+    const judgeFailureReasons = new Set();
     try {
       progress.start("Preparing evaluations");
       const credentials = Object.fromEntries(
@@ -1600,6 +1589,7 @@ async function runCliMain(argv, io, dependencies) {
         ? dependencies.createAnthropicJsonJudge({
             model: runtimeProfile.judge.model,
             apiKey: runtimeSecrets.judgeCredential,
+            onFailure: (reason) => judgeFailureReasons.add(reason),
           })
         : null;
       const engine = dependencies.createRunEngine({
@@ -1609,14 +1599,9 @@ async function runCliMain(argv, io, dependencies) {
         )].map((adapterId) => (
           dependencies.createAgentAdapter(adapterId, dependencies.env)
         )),
-        executionEnvironment: runtimeProfile.environment.kind === "e2b"
-          ? dependencies.createE2BExecutionEnvironment({
-              apiKey: runtimeSecrets.e2bApiKey,
-              progressObserver,
-            })
-          : runtimeProfile.environment.kind === "together"
-            ? dependencies.createTogetherExecutionEnvironment({ apiKey: runtimeSecrets.togetherApiKey, progressObserver })
-            : dependencies.createLocalExecutionEnvironment(),
+        executionEnvironment: runtimeProfile.environment.kind === "together"
+          ? dependencies.createTogetherExecutionEnvironment({ apiKey: runtimeSecrets.togetherApiKey, progressObserver })
+          : dependencies.createLocalExecutionEnvironment(),
         ...(judge === null ? {} : { judge }),
         progressObserver,
       });
@@ -1705,6 +1690,7 @@ async function runCliMain(argv, io, dependencies) {
           ? ` · ${authority.disagreements} ${plural(authority.disagreements, "disagreement")}`
           : "");
       io.stdout.write(runFact("Judge", judge, { useColor }));
+      for (const reason of [...judgeFailureReasons].slice(0, 3)) io.stdout.write(runFact("Judge issue", reason, { useColor }));
     }
     for (const run of summary.nonPasses) {
       if (!reportedReasonRunIds.has(run.id)) {

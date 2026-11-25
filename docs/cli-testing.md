@@ -82,17 +82,17 @@ hurdle validate api-codex-evals/example.suite.mjs --offline
 hurdle validate custom-evals/example.suite.mjs --offline
 ```
 
-All commands should exit 0. Help must describe the command. Version aliases
-must agree. Init must report the generated model and effort. Offline validation
-must show the correct Agent configuration and explicitly skip readiness.
-No agent, judge, E2B resource, or model inference should run.
+All commands should exit 0. Help must describe the command. The three version
+commands must agree. Init must report the generated model and effort. Offline
+validation must show the correct Agent configuration and explicitly skip
+readiness. No agent, judge, sandbox, or model inference should run.
 
 ## Model discovery and overrides
 
 - [ ] `hurdle run together-api --model -h` — concise model guidance, the selected Suite defaults and a discovery command; no credentials or provider calls.
 - [ ] `hurdle models --agent claude-code` — up to 10 recent active models, newest first, with one provider compatibility note; no inference.
 - [ ] `hurdle models --agent codex --json` — up to 10 recent text/code choices in one JSON result; native/provider compatibility metadata remains available. A working API key should include newer provider IDs even if the native list is stale.
-- [ ] `hurdle models --agent codex --all` and `hurdle models --agent claude-code --all --json` — retrieve the full catalogs, including older models, dated snapshots and other model types.
+- [ ] `hurdle models --agent codex --all` and `hurdle models --agent claude-code --all --json` — retrieve the full catalogs, including older models, dated model IDs and other model types.
 - [ ] A rejected OpenAI key identifies the authentication failure and warns that the fallback catalog may omit newer models.
 - [ ] `hurdle validate codex-evals --offline --model arbitrary-new-model-id` — accepts a nonblank override without a model allowlist or inference.
 - [ ] With both runners in a Suite, `hurdle validate --offline --model arbitrary-new-model-id` exits 2 and asks for `--agent`; selecting the declared runner accepts the override.
@@ -114,7 +114,6 @@ hurdle run --environment-settings '[]'
 hurdle view --store one --runtime two
 hurdle view --port 0
 hurdle setup --json --interactive
-hurdle setup --store postgres --sandbox e2b
 ```
 
 Expect actionable argument errors and exit 2, without creating `bad-evals` or
@@ -126,8 +125,8 @@ should exit 1 with a Suite diagnostic.
 
 Install both agent CLIs and configure explicit credentials in the project's
 `.env.local` or shell. Claude accepts `ANTHROPIC_API_KEY` or
-`CLAUDE_CODE_OAUTH_TOKEN`; Codex accepts `CODEX_ACCESS_TOKEN`, `CODEX_API_KEY`,
-or `OPENAI_API_KEY`. Interactive agent logins are not inherited.
+`CLAUDE_CODE_OAUTH_TOKEN`; Codex accepts `CODEX_API_KEY` or `OPENAI_API_KEY`.
+Interactive agent logins are not inherited.
 
 ```sh
 hurdle validate
@@ -162,18 +161,14 @@ Viewer runs, a second `hurdle view` should report the busy port and suggest
 `--port 3001`, which should start alongside it. A failed agent run should
 provide a diagnostic and exit nonzero.
 
-## E2B and Together API
+## Together sandbox and API
 
-Add `E2B_API_KEY` and `TOGETHER_API_KEY` alongside Agent credentials. Template
-builds, agent inference, Together inference, and E2B sandboxes may incur charges.
-For a source installation, run `npm run setup:backends` from the repository root
-if the optional dependencies are missing. For a package installation, use
-`npm install hurdle --include=optional` in the evaluation project.
+Add `TOGETHER_API_KEY` alongside Agent credentials. Agent inference, Together
+inference, and sandboxes may incur charges.
 
 ```sh
 hurdle setup api-evals/example.suite.mjs
-# Reuses an available template, or reports build acceptance is required.
-hurdle setup api-evals/example.suite.mjs --yes --json
+hurdle setup api-evals/example.suite.mjs --json
 hurdle setup api-evals/example.suite.mjs --interactive
 hurdle validate api-evals/example.suite.mjs
 hurdle validate api-evals/example.suite.mjs --runtime .hurdle/runtime/default.json
@@ -184,17 +179,10 @@ hurdle view --runtime .hurdle/runtime/default.json
 
 JSON setup must emit one valid JSON document and use exit 0 on success, 1 on
 setup failure, or 2 on argument failure. The saved Runtime should be reused by
-validate, run, and view. Repeat setup must reuse available templates and preserve
-storage configuration. A template from an older Hurdle, such as
-`hurdle-codex:v1`, must make validate warn that it is outdated, and setup must
-then build the current one. The API run should show trusted Together HTTP evidence
-and `completion.json` in the Viewer. Repeat this path with
-`api-codex-evals/example.suite.mjs` to exercise Codex in E2B.
-
-Also try `setup api-evals/example.suite.mjs --template YOUR_EXISTING_TEMPLATE`.
-The supplied template must contain the selected agent CLI. Setup uses E2B by
-default; repeat the path with `setup api-evals/example.suite.mjs --sandbox together --yes`
-to exercise Together sandbox.
+validate, run, and view. Repeat setup must preserve storage configuration.
+Nothing is built. The API run should show trusted Together HTTP evidence and
+`completion.json` in the Viewer. Repeat this path with
+`api-codex-evals/example.suite.mjs` to exercise Codex in the sandbox.
 
 ## Postgres storage
 

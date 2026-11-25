@@ -1,4 +1,5 @@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { isOkStatus, summarizeApiCalls } from "@/lib/api-calls.mjs";
 
 export type TogetherRequest = {
   ts?: string;
@@ -32,8 +33,9 @@ function fmtBytes(n?: number | null): string {
   return `${(n / 1024 / 1024).toFixed(1)}MB`;
 }
 
-// The egress-proxy capture: every target API call the agent actually made,
+// The egress-proxy capture: every call the Agent made to the Suite's API hosts,
 // logged out-of-band so a pass is backed by real server receipts, not narration.
+// The Agent's own model, config and telemetry calls are left out.
 export function TogetherRequestsCard({
   requests,
   truncated = false,
@@ -42,12 +44,7 @@ export function TogetherRequestsCard({
   truncated?: boolean;
 }) {
   if (!requests || requests.length === 0) return null;
-  // 101 (WS upgrade) counts as ok, not a failure.
-  const blocked = requests.filter((request) => request.disposition === "blocked").length;
-  const failed = requests.filter((request) => (
-    request.disposition !== "blocked"
-    && (!request.status || (request.status !== 101 && (request.status < 200 || request.status >= 300)))
-  )).length;
+  const { blocked, failed } = summarizeApiCalls(requests);
   const showTraffic = requests.some((request) => request.method === "WS" || request.frames_sent != null);
   const showModel = requests.some((request) => request.model);
   const showTokens = requests.some((request) => (
@@ -83,7 +80,7 @@ export function TogetherRequestsCard({
             {requests.map((r, i) => {
               const isWs = r.method === "WS" || r.frames_sent != null;
               const isBlocked = r.disposition === "blocked";
-              const ok = !!r.status && ((r.status >= 200 && r.status < 300) || r.status === 101);
+              const ok = isOkStatus(r.status);
               const tokens = r.prompt_tokens != null || r.completion_tokens != null
                 ? `${r.prompt_tokens ?? 0}→${r.completion_tokens ?? 0}`
                 : "—";

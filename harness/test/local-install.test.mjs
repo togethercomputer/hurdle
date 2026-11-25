@@ -82,21 +82,22 @@ function waitForClose(child, timeoutMs = 10_000) {
   });
 }
 
-test("Local setup skips beta SDKs and the unused harness TypeScript install; CI keeps backend coverage", () => {
+test("the harness needs only the WebSocket client beside the Postgres driver, with no optional SDKs", () => {
   const harness = read("harness/package.json");
-  const scripts = read("package.json").scripts;
-  for (const name of ["e2b", "https-proxy-agent", "ws"]) {
-    assert.equal(harness.dependencies[name], undefined, name);
-    assert.ok(harness.optionalDependencies[name], name);
-  }
+  const pkg = read("package.json");
+  const scripts = pkg.scripts;
+  assert.ok(harness.dependencies.ws, "the Together socket needs the WebSocket client");
+  assert.ok(pkg.dependencies.ws, "the published package needs it too");
+  assert.equal(harness.optionalDependencies, undefined);
+  assert.equal(pkg.optionalDependencies, undefined);
   assert.equal(harness.devDependencies?.typescript, undefined);
   assert.equal(harness.devDependencies?.["@types/node"], undefined);
   assert.ok(harness.dependencies.pg, "the Viewer keeps its small Postgres driver");
-  assert.match(scripts.setup, /--prefix harness install --omit=optional/);
-  assert.match(scripts["setup:backends"], /--prefix harness install --include=optional/);
-  assert.match(scripts["setup:ci"], /--prefix harness ci --include=optional/);
+  assert.match(scripts.setup, /--prefix harness install(?! --omit=optional)/);
+  assert.equal(scripts["setup:backends"], undefined);
+  assert.match(scripts["setup:ci"], /--prefix harness ci(?! --include=optional)/);
   const quickstart = readFileSync(join(root, "harness/bin/source-quickstart.mjs"), "utf8");
-  assert.match(quickstart, /prefix === "harness".*"--omit=optional"/);
+  assert.doesNotMatch(quickstart, /omit=optional/);
 });
 
 test("the root hurdle command exposes the public CLI", () => {
@@ -135,6 +136,7 @@ test("the npm tarball installs a working CLI and Viewer", { timeout: 120_000 }, 
   const packagedPaths = new Set(packageMetadata.files.map(({ path }) => path));
   for (const path of [
     "LICENSE",
+    "CHANGELOG.md",
     "examples/copy-message/example.suite.mjs",
     "examples/concurrency-smoke/example.suite.mjs",
     ...["copy-alpha", "copy-beta", "copy-gamma"].flatMap(task => [
@@ -174,7 +176,6 @@ test("the npm tarball installs a working CLI and Viewer", { timeout: 120_000 }, 
     "install",
     "--offline",
     "--ignore-scripts",
-    "--omit=optional",
     "--no-audit",
     "--no-fund",
     "--package-lock=false",
@@ -346,15 +347,6 @@ test("the npm tarball installs a working CLI and Viewer", { timeout: 120_000 }, 
   assert.match(overridden.stdout, /future-codex-2099 · high effort/);
   assert.match(cli("validate", "custom-evals/example.suite.mjs", "--offline").stdout, /gpt-6\.1-sol · high effort/);
 
-  const missingBackend = spawnSync(process.execPath, [cliPath, "run", "--environment", "e2b"], {
-    cwd: consumerRoot,
-    encoding: "utf8",
-    env: { ...process.env, E2B_API_KEY: "test-not-a-real-key" },
-    timeout: 20_000,
-  });
-  assert.equal(missingBackend.status, 2, missingBackend.stdout + missingBackend.stderr);
-  assert.match(missingBackend.stderr, /\[backend-not-installed\].*npm install hurdle --include=optional/);
-
   const port = await availablePort();
   writeFileSync(join(consumerRoot, "runtime.json"), `${JSON.stringify({
     schemaVersion: 1,
@@ -453,7 +445,7 @@ test("the npm tarball installs a working CLI and Viewer", { timeout: 120_000 }, 
   assert.doesNotMatch(output(), /viewer-disposal-unconfirmed|internal-error/);
 });
 
-test("a Local install runs a real controller without E2B and rejects missing E2B before opening a store", (t) => {
+test("a Local install runs a real controller from framework source", (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "tae-core-only-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
   const harness = join(cwd, "harness");
@@ -467,16 +459,12 @@ test("a Local install runs a real controller without E2B and rejects missing E2B
   for (const name of Object.keys(read("harness/package.json").dependencies)) {
     symlinkSync(join(root, "harness/node_modules", name), join(harness, "node_modules", name));
   }
-  const env = { PATH: process.env.PATH, E2B_API_KEY: "test-not-a-real-key", NODE_OPTIONS: `--import=${join(root, "harness/test/helpers/readiness-fetch.mjs")}` };
+  const env = { PATH: process.env.PATH, TOGETHER_API_KEY: "test-not-a-real-key", NODE_OPTIONS: `--import=${join(root, "harness/test/helpers/readiness-fetch.mjs")}` };
   const cli = (...args) => spawnSync(process.execPath, [join(harness, "bin/hurdle.mjs"), ...args], { cwd, env, encoding: "utf8", timeout: 20_000 });
   const initialized = cli("init", "evals");
   assert.equal(initialized.status, 0, initialized.stderr);
   const validated = cli("validate", "evals/example.suite.mjs", "--offline");
   assert.equal(validated.status, 0, validated.stderr);
-  const remote = cli("run", "evals/example.suite.mjs", "--environment", "e2b");
-  assert.equal(remote.status, 2, remote.stderr);
-  assert.match(remote.stderr, /\[backend-not-installed\].*E2B.*npm install hurdle --include=optional/);
-  assert.equal(existsSync(join(cwd, ".hurdle/results-v1")), false);
   // Exercise the real Local controller and filesystem store with a fake Agent.
   const bin = join(cwd, "bin");
   mkdirSync(bin);

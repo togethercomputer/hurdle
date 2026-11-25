@@ -55,7 +55,6 @@ function npmInstallPlan(prefix) {
   const args = [
     "--prefix", prefix,
     "install",
-    ...(prefix === "harness" ? ["--omit=optional"] : []),
     "--no-audit",
     "--no-fund",
     "--loglevel=error",

@@ -1,9 +1,10 @@
 "use strict";
 
-// A small TCP-over-WebSocket bridge for the two-sandbox egress
-// guardian. E2B public URLs carry HTTP/WebSocket traffic, so the evaluated
-// sandbox exposes a loopback TCP proxy and this bridge transports each TCP
-// connection to the guardian without placing controller credentials there.
+// A small TCP-over-WebSocket bridge for the egress guardian. Sandbox public
+// URLs carry HTTP/WebSocket traffic, so the evaluated sandbox exposes a
+// loopback TCP proxy and this bridge transports each TCP connection to the
+// guardian (E2B: a guardian VM; Together: the controller host, which claims
+// flows over the reverse route) without placing controller credentials there.
 
 const { timingSafeEqual } = require("node:crypto");
 const dns = require("node:dns");
@@ -415,6 +416,8 @@ function runServer() {
   }
 
   server.on("upgrade", (request, socket, head) => {
+    // A peer may reset a rejected upgrade; never let that crash the bridge.
+    socket.on("error", () => socket.destroy());
     if (request.url !== "/proxy") return reject(socket, 404, "Not Found");
     if (!tokenMatches(cellToken, request.headers["x-together-egress-cell-token"])) {
       return reject(socket, 401, "Unauthorized");
@@ -456,6 +459,9 @@ function createReverseRoute(cellToken) {
     socket.end(`HTTP/1.1 ${status} Rejected\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
   }
   server.on("upgrade", (request, socket, head) => {
+    // A late relay leg for an expired flow is rejected; a reset on that
+    // socket must not take down every other flow in the workload.
+    socket.on("error", () => socket.destroy());
     if (!tokenMatches(cellToken, request.headers["x-together-egress-cell-token"])) return reject(socket, 401);
     if (request.url === "/control") {
       if (controller) return reject(socket, 409);
@@ -506,7 +512,8 @@ function createReverseRoute(cellToken) {
 function runClient(reverse = false) {
   loadWebSocketRuntime();
   const listenPort = integer("EGRESS_BRIDGE_LISTEN_PORT", 8080);
-  const guardianUrl = required("EGRESS_BRIDGE_URL");
+  // A reverse client never dials out: the controller claims each flow.
+  const guardianUrl = reverse ? null : required("EGRESS_BRIDGE_URL");
   // Together's application port is protected by the per-cell bridge token.
   // Its SDK/management bearer token must never enter the workload VM.
   const trafficHeader = process.env.EGRESS_BRIDGE_TRAFFIC_HEADER ?? "e2b-traffic-access-token";

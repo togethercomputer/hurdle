@@ -697,30 +697,6 @@ test("hurdle run reports unknown matrix filters as argument errors", (t) => {
   }
 });
 
-test("hurdle run rejects E2B without its operational key before opening a store", (t) => {
-  const cwd = mkdtempSync(join(tmpdir(), "tae-cli-e2b-key-"));
-  t.after(() => rmSync(cwd, { recursive: true, force: true }));
-  assert.equal(runCli(cwd, ["init"]).status, 0);
-  const store = join(cwd, "must-not-exist");
-
-  const result = runCli(cwd, [
-    "run",
-    "evals/example.suite.mjs",
-    "--environment",
-    "e2b",
-    "--store",
-    store,
-  ], { E2B_API_KEY: "" });
-
-  assert.equal(result.status, 2);
-  assert.equal(result.stdout, "\nHurdle\n\n");
-  assert.equal(
-    result.stderr,
-    "✗ hurdle [argument-error] --environment e2b requires E2B_API_KEY.\n",
-  );
-  assert.equal(existsSync(store), false);
-});
-
 test("hurdle run rejects ambiguous or duplicate matrix selectors", (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "tae-cli-selector-errors-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));

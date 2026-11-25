@@ -1,22 +1,20 @@
-# E2B and Postgres
+# Postgres result storage
 
 Hurdle runs locally and saves results to `.hurdle/results-v1` by default. Follow this
-guide only when you need isolated E2B execution, Postgres storage, or both.
+guide only when you need Postgres storage.
 
-For E2B setup, the default sandbox, use `npx hurdle setup --yes` in your evaluation project. It
-reads configured credentials, reuses or builds a template, and saves a Runtime used by
-subsequent commands. For storage setup, run `npx hurdle setup --store postgres`
-with an existing database URL. It checks the connection, applies the schema, and
-saves storage settings while preserving Local or E2B execution. See
-[sandbox and storage setup](./sandbox-setup.md). The manual steps below support
-custom Runtime files when working from a repository checkout.
+In an evaluation project, run `npx hurdle setup --store postgres` with an
+existing database URL. It checks the connection, applies the schema, and saves
+storage settings while preserving Local or Together execution. See
+[sandbox and storage setup](./sandbox-setup.md#use-postgres-for-results). The
+manual steps below support custom Runtime files when working from a repository
+checkout.
 
 | Runtime | Execution | Result store |
 | --- | --- | --- |
 | Default | Local | Filesystem |
-| `e2b` | E2B | Filesystem |
 | `postgres` | Local | Postgres |
-| `e2b-postgres` | E2B | Postgres |
+| `together-postgres` | Together sandbox | Postgres |
 
 ## 1. Configure credentials
 
@@ -25,52 +23,32 @@ Add only the services you use to the ignored `.env.local` file:
 ```sh
 ANTHROPIC_API_KEY=...
 TOGETHER_API_KEY=...
-E2B_API_KEY=...
-E2B_TEMPLATE=...
 HURDLE_RESULT_STORE_DATABASE_URL=postgresql://...
 ```
 
-The Together Suites need the Anthropic and Together keys. E2B needs
-`E2B_API_KEY` and `E2B_TEMPLATE`. Postgres needs
+The Together Suites need the Anthropic and Together keys. Postgres needs
 `HURDLE_RESULT_STORE_DATABASE_URL`. Existing `TAE_RESULT_STORE_DATABASE_URL`
 credentials remain supported; new projects should use the Hurdle name. The
-Hurdle variable takes precedence when present, even if empty; the legacy alias
+Hurdle variable takes precedence when present, even if empty; the legacy name
 applies only when it is absent. For the same variable name, `.env.local` overrides
 the shell.
-
-Install the optional backend packages:
-
-```sh
-npm run setup:backends
-```
 
 ## 2. Create a Runtime
 
 Choose one command:
 
 ```sh
-npm run runtime:init -- e2b
 npm run runtime:init -- postgres
-npm run runtime:init -- e2b-postgres
+npm run runtime:init -- together-postgres
 ```
 
 The command writes `.hurdle/runtime/<kind>.json` and refuses to overwrite an
-existing file.
-
-Your E2B template must contain Node.js 22 and Claude Code. Set its name with
-`E2B_TEMPLATE`, or pass it directly:
-
-```sh
-npm run runtime:init -- e2b --template YOUR_E2B_TEMPLATE
-```
-
-Runtime initialization creates local configuration only. It does not create an
-E2B template, database, or schema.
+existing file. Runtime initialization creates local configuration only. It does
+not create a database or schema.
 
 ## 3. Initialize Postgres
 
-Skip this step for filesystem storage. For either Postgres Runtime, apply the
-schema once:
+Apply the schema once:
 
 ```sh
 npm run db:migrate
@@ -105,33 +83,30 @@ npm run preflight
 ```
 
 Preflight checks only configured services. Anthropic and Together make small
-billable requests. E2B lists account resources without allocating a sandbox.
-Postgres checks the connection and schema without applying migrations.
+billable requests. Postgres checks the connection and schema without applying
+migrations.
 
 For the same variable name, values in `.env.local` take precedence over values
-inherited from the shell. Hurdle names take precedence over legacy aliases as
+inherited from the shell. Hurdle names take precedence over legacy names as
 described above. Evaluation runs use the same precedence.
 
 ## 5. Run one cell
 
-Set the Runtime path you created, then run a RAG cell:
+Set the Runtime path you created, then run a tool-calling cell:
 
 ```sh
-RUNTIME=.hurdle/runtime/e2b.json
+RUNTIME=.hurdle/runtime/postgres.json
 
 npm run hurdle -- run \
   evals/together/hybrid.suite.mjs \
   --runtime "$RUNTIME" \
-  --task rag-search \
+  --task tool-calling-agent-loop \
   --condition baseline \
   --view
 ```
 
-Use `.hurdle/runtime/postgres.json` or
-`.hurdle/runtime/e2b-postgres.json` for the other configurations.
-
-Filesystem-backed E2B results are saved in `.hurdle/e2b-results-v1`. Postgres
-results are written to the configured database.
+Use `.hurdle/runtime/together-postgres.json` to run the same cell in the
+Together sandbox. Results are written to the configured database.
 
 ## Reopen results
 
@@ -156,18 +131,8 @@ order by created_at desc;
 
 ## Beta limitations
 
-E2B, Agent, Judge, and Together usage may be billed.
+Agent, Judge, and Together usage may be billed.
 
 Voice, DMI, fine-tuning, Jig, and persistent-resource lifecycle Tasks are
 outside the preview. This release does not claim legacy score continuity or full
 replacement of the legacy runner.
-
-
-## Together sandbox
-
-Together execution can use filesystem or Postgres storage through the same
-Runtime API. Run `hurdle setup --sandbox together --yes` for an artifact-only
-Suite, or initialize `together` / `together-postgres` with `--snapshot ALIAS`.
-Read [Together sandbox setup and limitations](./sandbox-setup.md#together-sandbox)
-before use. Together API Suites use a separate Guardian VM for the same trusted
-capture, request blocking and credential substitution as E2B.
