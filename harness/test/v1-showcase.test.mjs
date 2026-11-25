@@ -79,7 +79,7 @@ function capturedToolInput(snapshot) {
     egress: [{
       status: "captured",
       provenance: {
-        producer: "controlled-e2b",
+        producer: "controlled-sandbox",
         authority: "environment",
         lifecyclePhase: "execution",
         capturedAt: "2026-08-28T12:00:00.000Z",
@@ -381,25 +381,25 @@ test("the CLI previews the showcase denominator and billable services before exe
     createRunEngine() {
       return { async run(input) {
         events.push(["execute"]);
-        assert.equal(input.taskIds.length, 4);
+        assert.equal(input.taskIds.length, 3);
         assert.equal(input.conditionIds.length, 3);
         assert.equal(input.agentSelections.length, 1);
         return {
           status: "completed",
           diagnostics: [],
           summary: {
-            plannedCells: 12,
-            plannedRepeats: 12,
-            attempts: 12,
+            plannedCells: 9,
+            plannedRepeats: 9,
+            attempts: 9,
             retriesPerformed: 0,
-            terminalVerdicts: { pass: 12, fail: 0, incomplete: 0, unknown: 0 },
+            terminalVerdicts: { pass: 9, fail: 0, incomplete: 0, unknown: 0 },
             authorityCoverage: {
-              totalRuns: 12,
-              recordedRuns: 12,
-              judgeRequiredRuns: 12,
-              judgeCompletedRuns: 12,
-              comparableRuns: 12,
-              agreements: 12,
+              totalRuns: 9,
+              recordedRuns: 9,
+              judgeRequiredRuns: 9,
+              judgeCompletedRuns: 9,
+              comparableRuns: 9,
+              agreements: 9,
               disagreements: 0,
             },
             nonPasses: [],
@@ -418,7 +418,7 @@ test("the CLI previews the showcase denominator and billable services before exe
   ], { cwd: root, stdout, stderr });
   assert.equal(exit, 0, events.filter(([kind]) => kind === "stderr").flat().join(""));
   const output = events.filter(([kind]) => kind === "stdout").map(([, value]) => value).join("");
-  assert.match(output, /^  Plan\s+12 runs · 4 tasks · 3 conditions$/m);
+  assert.match(output, /^  Plan\s+9 runs · 3 tasks · 3 conditions$/m);
   assert.match(output, /^  Runtime\s+runtime.json\n  Execution\s+Local\n  Store\s+Filesystem$/m);
   assert.match(output, /^  Scoring\s+Judge$/m);
   assert.match(output, /^  Usage\s+Agent, Judge, and external API may be billed$/m);
@@ -426,6 +426,7 @@ test("the CLI previews the showcase denominator and billable services before exe
     output,
     /^  Access\s+Target API credentials available to Agent$/m,
   );
+  assert.match(output, /^  Keys\s+[A-Z0-9_]+ → the Agent's environment$/m);
   assert.ok(events.findIndex(([kind]) => kind === "stdout") < events.findIndex(([kind]) => kind === "store"));
   assert.ok(events.findIndex(([kind]) => kind === "stdout") < events.findIndex(([kind]) => kind === "execute"));
 });
@@ -438,7 +439,7 @@ test("representative Claude and Codex Runs store code, Judge, version, and denom
   assert.equal(resolved.ok, true, JSON.stringify(resolved.diagnostics));
   const store = await openLocalResultStore({ root: join(root, "results") });
   const environment = {
-    id: "controlled-e2b",
+    id: "controlled-sandbox",
     capabilities: ["environment.isolated-workspace", "environment.trusted-egress-capture"],
     captureCapabilities: { protocols: ["https"], selectedFields: true },
     normalizeSettings(settings = {}) { return settings; },
@@ -473,7 +474,7 @@ test("representative Claude and Codex Runs store code, Judge, version, and denom
         egressCollections: [{
           status: "captured",
           provenance: {
-            producer: "controlled-e2b",
+            producer: "controlled-sandbox",
             authority: "environment",
             lifecyclePhase: "execution",
             capturedAt: "2026-08-28T12:00:01.000Z",

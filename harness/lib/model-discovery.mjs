@@ -182,8 +182,7 @@ async function codexModels(env, { spawn, signal }) {
   const abort = () => fail(cancelled());
   try {
     const selectedEnv = { PATH: env.PATH ?? "", HOME: root, CODEX_HOME: root, ...(process.platform === "win32" ? { SystemRoot: env.SystemRoot } : {}) };
-    if (nonblank(env.CODEX_ACCESS_TOKEN)) selectedEnv.CODEX_ACCESS_TOKEN = env.CODEX_ACCESS_TOKEN;
-    else if (nonblank(env.CODEX_API_KEY)) selectedEnv.CODEX_API_KEY = env.CODEX_API_KEY;
+    if (nonblank(env.CODEX_API_KEY)) selectedEnv.CODEX_API_KEY = env.CODEX_API_KEY;
     else if (nonblank(env.OPENAI_API_KEY)) selectedEnv.CODEX_API_KEY = env.OPENAI_API_KEY;
     // Isolated HOME and cwd exclude interactive credentials and project plugins.
     child = spawn("codex", ["app-server"], { cwd: root, env: selectedEnv, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32", windowsHide: true });
@@ -264,9 +263,8 @@ export async function discoverModels({ agent, env = process.env, signal }, { fet
       source = "Anthropic Models API";
       compatibility = "provider-catalog";
     } else {
-      // Preserve adapter credential precedence; do not query a different account's
-      // API key when an explicit subscription token is selected.
-      const key = nonblank(env.CODEX_ACCESS_TOKEN) ? null : nonblank(env.CODEX_API_KEY) ? env.CODEX_API_KEY : nonblank(env.OPENAI_API_KEY) ? env.OPENAI_API_KEY : null;
+      // Same precedence as the Codex Adapter.
+      const key = nonblank(env.CODEX_API_KEY) ? env.CODEX_API_KEY : nonblank(env.OPENAI_API_KEY) ? env.OPENAI_API_KEY : null;
       const [native, provider] = await Promise.allSettled([
         codexModels(env, { spawn, signal: combined }),
         key ? openaiModels(env, key, { fetch, signal: combined }) : Promise.resolve(null),

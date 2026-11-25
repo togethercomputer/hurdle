@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { defaultLocalStoreRoot } from "./project-paths.mjs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { DEFAULT_PROJECT_RUNTIME, defaultLocalStoreRoot, projectRuntimePath } from "./project-paths.mjs";
+import { cliExecutable } from "./terminal-output.mjs";
 import { canonicalEnvironmentName, hurdleEnvironmentValue } from "./hurdle-environment.mjs";
 
 import {
@@ -224,46 +225,6 @@ function settings(value, sourcePath, pointer) {
   return structuredClone(value);
 }
 
-function e2bSettings(value, sourcePath) {
-  const normalized = settings(value, sourcePath, "/environment/settings");
-  const allowed = new Set([
-    "captureProfile",
-    "workloadTemplate",
-    "guardianTemplate",
-    "region",
-    "cpuCount",
-    "memoryMiB",
-    "maxLifetimeMs",
-  ]);
-  for (const key of Object.keys(normalized)) {
-    if (!allowed.has(key)) schemaError(`E2B settings do not allow '${key}'.`, sourcePath, "/environment/settings");
-  }
-  for (const key of ["captureProfile", "workloadTemplate", "guardianTemplate"]) {
-    if (normalized[key] !== undefined) {
-      nonblankString(normalized[key], `E2B ${key}`, sourcePath, `/environment/settings/${key}`);
-    }
-  }
-  if (
-    normalized.captureProfile !== undefined
-    && normalized.captureProfile !== "external-guardian-http-metadata-v1"
-  ) {
-    schemaError("E2B captureProfile is not supported.", sourcePath, "/environment/settings/captureProfile");
-  }
-  if (normalized.region !== undefined && normalized.region !== null) {
-    schemaError("E2B region selection is not supported.", sourcePath, "/environment/settings/region");
-  }
-  for (const [key, minimum, maximum] of [
-    ["cpuCount", 1, 64],
-    ["memoryMiB", 512, 262_144],
-    ["maxLifetimeMs", 1_000, 86_400_000],
-  ]) {
-    if (normalized[key] !== undefined) {
-      positiveInteger(normalized[key], `E2B ${key}`, minimum, maximum, sourcePath, `/environment/settings/${key}`);
-    }
-  }
-  return normalized;
-}
-
 function positiveInteger(value, label, minimum, maximum, sourcePath, pointer) {
   if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
     schemaError(`${label} must be an integer from ${minimum} to ${maximum}.`, sourcePath, pointer);
@@ -273,6 +234,32 @@ function positiveInteger(value, label, minimum, maximum, sourcePath, pointer) {
 
 function resolveProfilePath(value, label, sourcePath, pointer) {
   return resolve(dirname(sourcePath), nonblankString(value, label, sourcePath, pointer, 4096));
+}
+
+function displayProfilePath(sourcePath, cwd) {
+  const local = cwd ? relative(cwd, sourcePath) : "";
+  return !local || local === ".." || local.startsWith(`..${sep}`) || isAbsolute(local) ? sourcePath : local;
+}
+
+// Hurdle 0.5.0 removed E2B and Together snapshot images. Setup replaces only
+// these execution settings; any other invalid Runtime is left for the user.
+export function removedRuntimeSandbox(environment) {
+  if (!isRecord(environment)) return null;
+  if (environment.kind === "e2b") return "e2b";
+  return environment.kind === "together" && isRecord(environment.settings)
+    && Object.hasOwn(environment.settings, "snapshotAlias") ? "snapshot" : null;
+}
+
+// Setup writes only the project Runtime, so only that file can be fixed by it.
+function recoveryHint(sourcePath, cwd, removed) {
+  const path = displayProfilePath(sourcePath, cwd);
+  const setup = `${cliExecutable(cwd)} setup`;
+  const projectRuntime = cwd && sourcePath === resolve(cwd, projectRuntimePath(cwd) ?? DEFAULT_PROJECT_RUNTIME);
+  if (!projectRuntime) return ` Runtime file: ${path}. Fix or remove it.`;
+  if (removed) {
+    return ` Runtime file: ${path}. Hurdle 0.5.0 removed ${removed === "e2b" ? "the E2B sandbox" : "Together snapshot images"}; run \`${setup}\` to switch it to the Together sandbox.`;
+  }
+  return ` Runtime file: ${path}. Fix it, or remove it and run \`${setup}\`.`;
 }
 
 function normalizedEnvironment(value, sourcePath) {
@@ -285,14 +272,6 @@ function normalizedEnvironment(value, sourcePath) {
     }
     return { kind: "local", settings: normalizedSettings };
   }
-  if (value.kind === "e2b") {
-    if (!Object.hasOwn(value, "apiKeyEnv")) schemaError("E2B Environment requires 'apiKeyEnv'.", sourcePath, "/environment/apiKeyEnv");
-    return {
-      kind: "e2b",
-      apiKeyEnv: environmentName(value.apiKeyEnv, "E2B apiKeyEnv", sourcePath, "/environment/apiKeyEnv"),
-      settings: e2bSettings(value.settings ?? {}, sourcePath),
-    };
-  }
   if (value.kind === "together") {
     if (!Object.hasOwn(value, "apiKeyEnv")) schemaError("Together Environment requires 'apiKeyEnv'.", sourcePath, "/environment/apiKeyEnv");
     const input = settings(value.settings ?? {}, sourcePath, "/environment/settings");
@@ -300,7 +279,7 @@ function normalizedEnvironment(value, sourcePath) {
     catch (error) { schemaError(error.message, sourcePath, "/environment/settings"); }
     return { kind: "together", apiKeyEnv: environmentName(value.apiKeyEnv, "Together apiKeyEnv", sourcePath, "/environment/apiKeyEnv"), settings: input };
   }
-  schemaError("Runtime Profile Environment kind must be 'local', 'e2b', or 'together'.", sourcePath, "/environment/kind");
+  schemaError("Runtime Profile Environment kind must be 'local' or 'together'.", sourcePath, "/environment/kind");
 }
 
 function normalizedResultStore(value, sourcePath) {
@@ -376,10 +355,23 @@ export function resolveRuntimeProfile({ runtimePath, cwd, defaultRoot } = {}, { 
   if (typeof source !== "string") source = Buffer.from(source).toString("utf8");
   // RFC 8259 lets parsers ignore a byte order mark; some editors add one.
   source = source.replace(/^\uFEFF/, "");
-  if (Buffer.byteLength(source) > MAX_PROFILE_BYTES) {
-    throw new RuntimeProfileError("runtime.profile-schema", "Runtime Profile exceeds 262144 bytes.", { sourcePath });
+  let parsed;
+  try {
+    if (Buffer.byteLength(source) > MAX_PROFILE_BYTES) {
+      throw new RuntimeProfileError("runtime.profile-schema", "Runtime Profile exceeds 262144 bytes.", { sourcePath });
+    }
+    parsed = strictJson(source, sourcePath);
+    return deepFreeze(normalizedProfile(parsed, sourcePath));
+  } catch (error) {
+    // Name the file and how to recover. `removedSandbox` tells setup this is
+    // a Runtime it may replace.
+    if (error instanceof RuntimeProfileError) {
+      const removed = removedRuntimeSandbox(parsed?.environment);
+      error.message += recoveryHint(sourcePath, cwd, removed);
+      error.removedSandbox = removed;
+    }
+    throw error;
   }
-  return deepFreeze(normalizedProfile(strictJson(source, sourcePath), sourcePath));
 }
 
 export function describeRuntimeJudgeCapability(profile) {
@@ -392,6 +384,15 @@ export function describeRuntimeJudgeCapability(profile) {
     maxInputBytes: ANTHROPIC_JSON_JUDGE_MAX_INPUT_BYTES,
     maxOutputBytes: ANTHROPIC_JSON_JUDGE_MAX_OUTPUT_BYTES,
   });
+}
+
+// The Judge credential a new Runtime names: an Anthropic API key when one is
+// set, otherwise a Claude Code OAuth token (the Judge then runs `claude -p`).
+export function judgeCredentialEnvironment(env = {}) {
+  const set = (name) => typeof env[name] === "string" && env[name].trim().length > 0;
+  return !set("ANTHROPIC_API_KEY") && set("CLAUDE_CODE_OAUTH_TOKEN")
+    ? "CLAUDE_CODE_OAUTH_TOKEN"
+    : "ANTHROPIC_API_KEY";
 }
 
 function resolveNamedSecret(name, env) {
@@ -407,9 +408,6 @@ function resolveNamedSecret(name, env) {
 
 export function resolveRuntimeSecrets(profile, env = process.env, needs = {}) {
   const resolved = {};
-  if (profile?.environment?.kind === "e2b" && needs.environment !== false) {
-    resolved.e2bApiKey = resolveNamedSecret(profile.environment.apiKeyEnv, env);
-  }
   if (profile?.environment?.kind === "together" && needs.environment !== false) {
     resolved.togetherApiKey = resolveNamedSecret(profile.environment.apiKeyEnv, env);
   }

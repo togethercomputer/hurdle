@@ -18,7 +18,7 @@ npx hurdle init --agent codex --model gpt-6.1-sol --effort medium
 
 `init --model` writes a model into the Suite. `run --model` and
 `validate --model` override the selected runner’s model for that invocation.
-Use any model ID or alias supported by Claude Code or Codex; Hurdle has no
+Use any model ID or short name supported by Claude Code or Codex; Hurdle has no
 model allowlist. With both runners in a Suite, select one with `--agent`.
 Effort settings are preserved, and identical selections after the override run
 once. Use `run SUITE --model -h` to see guidance and the Suite defaults.
@@ -34,7 +34,7 @@ npx hurdle models --agent codex --all
 
 By default, discovery shows up to 10 recent text/code choices, newest first by
 the provider's catalog date (Anthropic release date or OpenAI creation time).
-Undated entries retain upstream order. Duplicate dated snapshots are omitted
+Undated entries retain upstream order. Duplicate dated model IDs are omitted
 when a shorter ID is present, and deprecated models are omitted. Add `--all`
 for the full catalog, including older models and other model types. `--json`
 uses the same selection; combine it with `--all` to retrieve every entry.
@@ -47,9 +47,8 @@ may be cached, and provider-only entries have unverified runner compatibility;
 OpenAI's provider catalog lacks coding/modality metadata, so its default
 shortlist uses a conservative naming heuristic to omit obvious audio, image,
 search, embedding and fine-tuned IDs. This is not a compatibility check;
-unfamiliar provider IDs remain discoverable with `--all`. An explicit
-`CODEX_ACCESS_TOKEN` takes precedence, so discovery does not query a different
-API-key account in that case. Catalog entries do not verify execution access.
+unfamiliar provider IDs remain discoverable with `--all`. Catalog entries do
+not verify execution access.
 New releases may require updating the Agent CLI or sandbox image. Discovery
 never changes the pinned Suite defaults or restricts an explicit `--model` ID.
 `models --help` and `run SUITE --model -h` remain offline.
@@ -63,11 +62,10 @@ configuration; an interactive CLI login alone is not inherited.
 
 - Claude Code: `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` generated with
   `claude setup-token`. A nonblank API key takes precedence over the OAuth token.
-- Codex: `CODEX_ACCESS_TOKEN`, then `CODEX_API_KEY`, then `OPENAI_API_KEY`. Codex
-  access tokens exist only for ChatGPT Business and Enterprise workspaces, where
-  they are created in the ChatGPT admin console
-  ([OpenAI docs](https://developers.openai.com/codex/enterprise/access-tokens)).
-  With a personal ChatGPT plan, use an OpenAI API key.
+- Codex: `CODEX_API_KEY`, then `OPENAI_API_KEY`. Hurdle runs Codex with an
+  OpenAI API key only. A ChatGPT access token (`CODEX_ACCESS_TOKEN`) is ignored:
+  it can act for you across all of ChatGPT, not just Codex. An API key can be
+  limited with an OpenAI project budget.
 
 Keep `.env.local` out of version control, then check readiness:
 
@@ -78,7 +76,7 @@ npx hurdle run --view
 
 `validate` checks definitions, installed local agent executables, required task
 and Runtime credentials, and API-key authentication through read-only provider
-endpoints. It never runs an Agent or Judge, creates an E2B sandbox, or requests
+endpoints. It never runs an Agent or Judge, creates a sandbox, or requests
 model inference. Subscription-token validity and remote agent installation are
 reported as unverified; these checks do not prove model access or billing
 readiness. `run` repeats the same checks before opening a result store or
@@ -88,14 +86,13 @@ Use the same `--runtime FILE` and Agent filter and model override as your run to
 configuration you intend to execute.
 
 Use `npx hurdle setup` to configure the project Runtime: execution, result
-storage, Judge and Viewer settings. Execution can use Local, E2B sandbox
-or Together sandbox. Sandbox setup defaults to E2B; use `--sandbox together`
-for Together sandbox.
+storage, Judge and Viewer settings. Execution can use Local or the Together
+sandbox.
 Without a saved Runtime, runs use Local execution and filesystem storage.
 The saved project Runtime is used by validate, run, and view; explicit Runtime
 or run topology options override it. Create a Together API demo with
 `init --example together-api`. See
-[sandbox setup](./sandbox-setup.md) for credentials, templates, and usage limits.
+[sandbox setup](./sandbox-setup.md) for credentials and usage limits.
 
 List the Suites already in your project:
 
@@ -108,7 +105,7 @@ For example, `evals/sandbox-smoke/example.suite.mjs` becomes `sandbox-smoke`.
 Use a unique name with `setup`, `validate` or `run`; ambiguous names require
 the full path. Use `suites --json` for scripts.
 
-For example, configure E2B and Postgres in separate steps, then run:
+For example, configure the sandbox and Postgres in separate steps, then run:
 
 ```sh
 npx hurdle setup sandbox-smoke
@@ -116,7 +113,6 @@ npx hurdle setup --store postgres
 npx hurdle run sandbox-smoke --view
 ```
 
-Add `--yes` to build a missing sandbox image without prompting.
 Storage setup preserves the sandbox configuration.
 
 With no Suite argument, Hurdle uses `evals/example.suite.mjs`, then
@@ -222,7 +218,7 @@ run.expect.tool("lookup_inventory", { count: 1 });
 ```
 
 Required request and tool checks need a Runtime that can capture trusted
-traffic, such as E2B or Together Sandbox. Native Local runs cannot prove those observations.
+traffic, such as the Together sandbox. Native Local runs cannot prove those observations.
 
 ### Block an expensive or destructive request
 
@@ -241,7 +237,7 @@ export default defineGuard((guard) => {
 });
 ```
 
-During an E2B or Together run, the Guardian returns a synthetic `403` before it substitutes
+During a sandbox run, the Guardian returns a synthetic `403` before it substitutes
 the real API credential or contacts the target. Hurdle automatically records a
 deterministic check for every guard: it passes when the Agent never tries the
 request and fails when the Guardian blocks an attempt. The blocked attempt is
@@ -249,8 +245,8 @@ retained as trusted, payload-free request evidence.
 
 Blocking is deliberately narrow in this release: `method` and `path` are exact,
 the path cannot contain a query or fragment, and request bodies are not
-inspected. A Task that declares a blocker requires execution in an E2B or
-Together sandbox; Local runs are rejected before the Agent starts.
+inspected. A Task that declares a blocker requires execution in the Together
+sandbox; Local runs are rejected before the Agent starts.
 
 ## 4. Choose how a run is scored
 
@@ -269,8 +265,12 @@ verdict: "hybrid",
 judge: { model: "claude-opus-4-8" },
 ```
 
-Configure the Judge credential in the Runtime. Run Trust is always enforced, so
-execution, evidence-capture, or cleanup failures cannot become a pass.
+Configure the Judge credential in the Runtime: `judge.credentialEnv` names
+`ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`. Setup picks the OAuth token
+only when no API key is set. With the OAuth token the Judge runs Claude Code on
+the machine running Hurdle, isolated from your own Claude Code configuration,
+so install Claude Code 2.1.288 or newer there. Run Trust is always enforced, so execution,
+evidence-capture, or cleanup failures cannot become a pass.
 
 Results stay distinct:
 
@@ -300,7 +300,7 @@ Use `--task`, `--condition`, or `--agent` to narrow the Suite matrix.
 Use `--model MODEL` to override the selected runner’s model without editing
 the Suite. With no override, all declared model configurations run.
 Different effort configurations remain separate; identical overridden
-configurations run once. The effective model is saved in each Run snapshot.
+configurations run once. The effective model is saved with each Run.
 
 Override the Suite concurrency for one invocation:
 
@@ -316,9 +316,9 @@ npx hurdle setup concurrent-tasks
 npx hurdle run concurrent-tasks --view
 ```
 
-This runs three copy tasks at once in E2B, using a workload VM and a Guardian
-VM per task. Skip setup if your Runtime is already configured. Use
-`--concurrency 1` for sequential execution.
+This runs three copy tasks at once in the Together sandbox, one VM per task.
+Skip setup if your Runtime is already configured. Use `--concurrency 1` for
+sequential execution.
 
 Label runs that you want to compare:
 
@@ -342,12 +342,38 @@ api: {
 },
 ```
 
-Supply the value through the Runtime or `.env.local`; never commit it. The
-framework redacts known credentials from newly captured evidence, but you should
-still avoid asking Agents to print secrets and review results before sharing
-them.
+Supply the value through the Runtime or `.env.local`; never commit it. Hurdle
+removes the exact text of known credentials, and its escaped forms, from newly
+captured evidence. An encoded or split copy, such as base64, is not caught, so
+avoid asking Agents to print secrets and review results before sharing them.
 
-Local runs execute Agent code on the host and are not a security sandbox. Use
-a Runtime configured for E2B or Together sandbox for isolation and trusted
-HTTP/tool evidence.
+A Suite is code you run. The Suite file, `checks.mjs` and `guard.mjs` run on
+your machine, inside Hurdle, with the same access to your environment and
+`.env.local` as any script you start. A sandbox isolates the Agent, not the
+Suite, so run only Suites you trust. Before anything starts, `hurdle validate`
+and `hurdle run` list each Suite key and where it can go.
+
+The Agent can use a key it cannot read. In a sandbox, the Guardian adds the
+Suite's key to every HTTPS request the Agent sends to `api.hosts`, whatever the
+method or path. That includes requests that keep costing money after the run,
+such as batch jobs, fine-tunes and dedicated endpoints, and requests that delete
+data. The Agent's own model key works the same way on its provider's hosts.
+Give evals a dedicated key with a low balance, and block costly or destructive
+requests in [`guard.mjs`](#block-an-expensive-or-destructive-request).
+
+Local runs execute Agent code on the host and are not a security sandbox: a
+Local Agent can read `.env.local`, including Together, Judge and database
+keys. Use a Runtime configured for the Together sandbox to isolate the Agent
+and get trusted HTTP/tool evidence.
 See [sandbox setup](./sandbox-setup.md).
+
+In the sandbox, the Agent's own model credential and the Suite's
+`authorizationCredential` stay in the Guardian, whatever the Task's checks; the
+Agent sees only a stand-in. See
+[where credentials live](./sandbox-setup.md#where-credentials-live) for every
+credential and environment.
+
+In a sandbox, the Guardian swaps the Suite's credential only in the request's
+`Authorization` header, sent as `Bearer <key>` or as the bare key. A target API
+that reads its key from another header, a query parameter or the request body
+receives only the stand-in and rejects the request.

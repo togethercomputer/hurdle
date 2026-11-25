@@ -91,7 +91,7 @@ test("execution progress projects closed frozen events and isolates observer fai
 test("non-pass progress projects only bounded single-line stored reasons", () => {
   const events = [];
   const cell = { ordinal: 1, total: 1, taskId: "sample", conditionId: "baseline", adapterId: "codex", repeatOrdinal: 1, repeatTotal: 1 };
-  const reason = { code: "environment.acquire-failed", summary: "E2B failed.\n\u001b[31mCheck setup.\u001b[0m", evidenceRefs: ["not-for-terminal"], rawError: "private-error" };
+  const reason = { code: "environment.acquire-failed", summary: "Sandbox failed.\n\u001b[31mCheck setup.\u001b[0m", evidenceRefs: ["not-for-terminal"], rawError: "private-error" };
   reportExecutionProgress({ observe(event) { events.push(event); } }, {
     kind: "cell-completed", cell,
     terminal: { id: "run_one", verdict: "incomplete", runTrustReasons: [{
@@ -111,7 +111,7 @@ test("non-pass progress projects only bounded single-line stored reasons", () =>
     summary: "Agent could not start.",
   }]);
   assert.equal(reasons.length, 3);
-  assert.deepEqual(reasons[0], { code: reason.code, summary: "E2B failed. Check setup." });
+  assert.deepEqual(reasons[0], { code: reason.code, summary: "Sandbox failed. Check setup." });
   assert.equal(reasons[1].summary.length, 300);
   assert.ok(reasons[1].summary.endsWith("…"));
   assert.ok(Object.isFrozen(reasons) && reasons.every(Object.isFrozen));
@@ -122,7 +122,7 @@ test("non-pass progress projects only bounded single-line stored reasons", () =>
 test("remote resource progress preserves provider identity and strips private metadata", () => {
   const events = [];
   const observer = { observe: event => events.push(event) };
-  for (const provider of ["e2b", "together"]) {
+  for (const provider of ["together"]) {
     assert.equal(reportExecutionProgress(observer, {
       kind: "environment-resource-allocated", executionId: "execution-one", environmentId: provider,
       resource: { provider, role: "agent", id: "vm-one", token: "private-token" },
@@ -131,7 +131,7 @@ test("remote resource progress preserves provider identity and strips private me
   }
   assert.equal(reportExecutionProgress(observer, {
     kind: "environment-resource-allocated", executionId: "execution-one", environmentId: "together",
-    resource: { provider: "e2b", role: "agent", id: "vm-one" },
+    resource: { provider: "other", role: "agent", id: "vm-one" },
   }), false);
   assert.doesNotMatch(JSON.stringify(events), /private-token/);
 });

@@ -1,4 +1,4 @@
-![Hurdle. Test how Claude Code and Codex use your API, SDK, or docs.](https://cdn.jsdelivr.net/npm/hurdle@0.2.9/docs/assets/readme-hero.png)
+![Hurdle. Test how Claude Code and Codex use your API, SDK, or docs.](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/assets/readme-hero.png)
 
 # Hurdle
 
@@ -7,9 +7,10 @@ API calls, tool use, and artifacts in the results viewer.
 
 ## Quick start
 
-Install Node.js 22.18+ and Claude Code, then create an evaluation:
+Install Node.js 22.18+ and the Claude Code CLI, then create an evaluation:
 
 ```sh
+npm install -g @anthropic-ai/claude-code
 mkdir my-evals && cd my-evals
 npx hurdle init
 ```
@@ -27,31 +28,12 @@ npx hurdle validate
 npx hurdle run --view
 ```
 
-Local execution is not a security sandbox. Use trusted tasks and keep `.env.local`
-out of version control. Agent usage may be billed.
+Local execution is not a security sandbox. Use trusted tasks. `init` adds
+`.env.local` and `.hurdle/` to `.gitignore`; keep `.env.local` out of version
+control. Agent usage may be billed.
 
 Results are saved in `.hurdle/`. Reopen them with `npx hurdle view`, adding
 `--port 3001` if port 3000 is busy.
-
-## Choose an agent
-
-| Agent | Create a starter | Credential in `.env.local` |
-| --- | --- | --- |
-| Claude Code | `npx hurdle init` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` |
-| Codex | `npx hurdle init --agent codex` | `OPENAI_API_KEY` |
-
-Install the selected agent CLI. Generate a Claude subscription token with `claude setup-token`.
-Codex also accepts `CODEX_ACCESS_TOKEN`, a Codex access token from a ChatGPT Business or Enterprise workspace.
-
-Starters use Opus 5.5 or GPT-6.1 Sol with medium effort. Discover other models:
-
-```sh
-npx hurdle models --agent claude-code
-npx hurdle models --agent codex
-```
-
-See [authoring](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/authoring.md)
-for authentication options, model overrides, and reasoning effort.
 
 ## Try the Together API
 
@@ -62,30 +44,59 @@ Create a Together API key:
    click **Create key**, name it `hurdle-evals`, then click **Create Key**.
 3. Copy the key immediately (it's shown only once).
 
-The example runs in an E2B sandbox by default. Copy an E2B API key from the
-[E2B console](https://console.e2b.dev/?tab=keys), then add both keys to
-`.env.local` alongside your agent credentials:
+Add it to `.env.local` alongside your agent credential:
 
 ```dotenv
 TOGETHER_API_KEY=your-together-api-key
-E2B_API_KEY=your-e2b-api-key
 ```
 
-Run the API example in an E2B sandbox and inspect captured HTTP activity:
+Run the API example in a Together sandbox and inspect captured HTTP activity:
 
 ```sh
 npx hurdle init api-evals --example together-api
-npx hurdle setup api-evals --yes
+npx hurdle setup api-evals
 npx hurdle run api-evals --view
 ```
 
 The agent lists models, makes a short completion, and saves `completion.json`.
-Setup builds or reuses a sandbox image. Sandbox and API usage may be billed.
-To use Together Sandbox instead, run `npx hurdle setup api-evals --sandbox together --yes`;
-it needs no E2B key.
+The sandbox has no network of its own. It reaches the world only through one
+socket back to a Guardian process on your machine; your keys never enter the
+sandbox, and the Guardian swaps them into requests on the way out. Nothing is
+built on your side. Sandbox and API usage may be billed.
 
-See [sandbox and storage setup](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/sandbox-setup.md)
-for Together Sandbox, existing images, and Postgres.
+See [the Together Hurdle socket](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/together-socket.md)
+for the contract and
+[sandbox and storage setup](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/sandbox-setup.md)
+for Postgres.
+
+## Choose an agent
+
+| Agent | Create a starter | Credential in `.env.local` |
+| --- | --- | --- |
+| Claude Code | `npx hurdle init` | `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` |
+| Codex | `npx hurdle init --agent codex` | `OPENAI_API_KEY` |
+
+Local runs use the `claude` or `codex` command on your `PATH`. Install the one you
+need, and update Codex if `validate` says it does not list the starter model:
+
+```sh
+npm install -g @anthropic-ai/claude-code
+npm install -g @openai/codex
+```
+
+Sandbox runs install the Agent CLI in the sandbox image, so they need no local
+install. Generate a Claude subscription token with `claude setup-token`.
+Codex runs with an OpenAI API key only (`OPENAI_API_KEY` or `CODEX_API_KEY`), not a ChatGPT login.
+
+Starters use Opus 5.5 or GPT-6.1 Sol with medium effort. Discover other models:
+
+```sh
+npx hurdle models --agent claude-code
+npx hurdle models --agent codex
+```
+
+See [authoring](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/authoring.md)
+for authentication options, model overrides, and reasoning effort.
 
 ## Tasks and checks
 
@@ -144,4 +155,5 @@ npm run hurdle -- run examples/copy-message/example.suite.mjs --view
 
 - [Authoring](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/authoring.md)
 - [Sandbox and storage setup](https://cdn.jsdelivr.net/npm/hurdle@latest/docs/sandbox-setup.md)
+- [Changelog](https://cdn.jsdelivr.net/npm/hurdle@latest/CHANGELOG.md)
 - [Contributing](https://cdn.jsdelivr.net/npm/hurdle@latest/CONTRIBUTING.md) · [Security](https://cdn.jsdelivr.net/npm/hurdle@latest/SECURITY.md)

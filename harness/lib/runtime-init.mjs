@@ -2,28 +2,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { RESULT_STORE_DATABASE_URL_ENV } from "./hurdle-environment.mjs";
 
-const MODES = new Set(["e2b", "postgres", "e2b-postgres", "together", "together-postgres"]);
-
-function e2bEnvironment(template) {
-  return {
-    kind: "e2b",
-    apiKeyEnv: "E2B_API_KEY",
-    settings: {
-      workloadTemplate: template,
-      guardianTemplate: "base",
-      cpuCount: 2,
-      memoryMiB: 2048,
-      maxLifetimeMs: 3_600_000,
-    },
-  };
-}
+const MODES = new Set(["postgres", "together", "together-postgres"]);
 
 function localEnvironment() {
   return { kind: "local", settings: {} };
-}
-
-function localStore() {
-  return { kind: "local", root: "../e2b-results-v1" };
 }
 
 function postgresStore() {
@@ -34,21 +16,18 @@ function postgresStore() {
   };
 }
 
-export function createRuntimeConfig(mode, { template, snapshot } = {}) {
+export function createRuntimeConfig(mode) {
   if (!MODES.has(mode)) {
-    throw new TypeError("Runtime kind must be e2b, postgres, e2b-postgres, together, or together-postgres.");
+    throw new TypeError("Runtime kind must be postgres, together, or together-postgres.");
   }
-  const usesE2b = mode === "e2b" || mode === "e2b-postgres";
   const usesTogether = mode === "together" || mode === "together-postgres";
-  if (usesTogether && (typeof snapshot !== "string" || !snapshot.trim())) throw new TypeError("Together runtime requires a snapshot alias.");
-  if (usesE2b && (typeof template !== "string" || !template.trim())) {
-    throw new TypeError("E2B runtime requires a workload template.");
-  }
   const usesPostgres = mode.endsWith("postgres");
+  // Runs use Together's Hurdle image over its socket.
+  const togetherSettings = { maxLifetimeMs: 3_600_000 };
   return Object.freeze({
     schemaVersion: 1,
-    environment: usesE2b ? e2bEnvironment(template.trim()) : usesTogether ? { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: { snapshotAlias: snapshot.trim(), cpuCount: 1, memoryMiB: 2048, maxLifetimeMs: 3_600_000 } } : localEnvironment(),
-    resultStore: usesPostgres ? postgresStore() : usesTogether ? { kind: "local", root: "../together-results-v1" } : localStore(),
+    environment: usesTogether ? { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: togetherSettings } : localEnvironment(),
+    resultStore: usesPostgres ? postgresStore() : { kind: "local", root: "../together-results-v1" },
     judge: {
       kind: "anthropic-json-v1",
       model: "claude-opus-4-8",
@@ -58,10 +37,10 @@ export function createRuntimeConfig(mode, { template, snapshot } = {}) {
   });
 }
 
-export async function initializeRuntime({ cwd, mode, template, snapshot }) {
+export async function initializeRuntime({ cwd, mode }) {
   const relativePath = `.hurdle/runtime/${mode}.json`;
   const path = resolve(cwd, relativePath);
-  const config = createRuntimeConfig(mode, { template, snapshot });
+  const config = createRuntimeConfig(mode);
   await mkdir(dirname(path), { recursive: true });
   try {
     await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, { flag: "wx", mode: 0o600 });

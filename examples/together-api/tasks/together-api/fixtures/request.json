@@ -1,7 +1,8 @@
 {
-  "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  "model": "Qwen/Qwen3.5-9B",
   "messages": [{ "role": "user", "content": "In one short sentence, explain what an agent evaluation checks." }],
   "max_tokens": 32,
   "temperature": 0,
+  "reasoning": { "enabled": false },
   "stream": false
 }

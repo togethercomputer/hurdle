@@ -49,7 +49,7 @@ export function missingSuiteSetupGuidance(cwd, provider, suite) {
   if (!existsSync(resolve(cwd, example))) return {
     message: `${missing}Create an evaluation first:\n\n  ${init}`, nextCommands: [init],
   };
-  const setup = `${executable} setup ${example} --sandbox ${provider} --yes`;
+  const setup = `${executable} setup ${example}`;
   return {
     message: `${missing}Try the bundled copy-message Suite:\n\n  ${setup}\n\nOr create your own evaluation:\n  ${init}`,
     nextCommands: [setup, init],

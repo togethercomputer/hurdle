@@ -55,9 +55,43 @@ export function runtimeSummaryRows(runtime, cwd, { inline = false } = {}) {
     : inline ? "Command-line configuration" : "Built-in Local default";
   return [
     ["Runtime", configuration],
-    ["Execution", { local: "Local", e2b: "E2B sandbox", together: "Together sandbox" }[runtime.environment.kind]],
+    ["Execution", { local: "Local", together: "Together sandbox" }[runtime.environment.kind]],
     ["Store", runtime.resultStore.kind === "postgres" ? "Postgres" : "Filesystem"],
   ];
+}
+
+// Where each selected Task's Suite key goes during a run. On the Together
+// socket it stays in the Guardian, which sends it only to the Suite's API
+// hosts. Locally, the Agent's own environment holds it.
+export function suiteKeyRoutes(definition, taskIds, environment) {
+  const guardianOnly = environment.kind === "together";
+  const routes = new Map();
+  for (const taskId of taskIds) {
+    const task = definition.tasks[taskId];
+    for (const name of task.credentialRequirements ?? []) {
+      const delivery = task.credentialDeliveryOverrides?.[name]
+        ?? definition.credentialRequirements?.[name]?.delivery
+        ?? { kind: "environment" };
+      const route = routes.get(name) ?? { name, hosts: new Set(), agentVisible: false };
+      for (const host of delivery.hosts ?? task.egress?.relevantHosts ?? definition.target?.egress?.relevantHosts ?? []) {
+        route.hosts.add(host);
+      }
+      if (delivery.kind === "environment" && !guardianOnly) route.agentVisible = true;
+      routes.set(name, route);
+    }
+  }
+  return [...routes.values()].map(({ name, hosts, agentVisible }) => ({
+    name, hosts: [...hosts].sort(), agentVisible,
+  }));
+}
+
+export function suiteKeyRows(routes) {
+  return routes.map(({ name, hosts, agentVisible }, index) => [
+    index ? "" : "Keys",
+    agentVisible
+      ? `${name} → the Agent's environment`
+      : `${name} → ${hosts.join(", ")}`,
+  ]);
 }
 
 // Safe to paste into POSIX shells, including paths containing shell expansions.

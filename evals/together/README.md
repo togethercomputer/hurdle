@@ -1,10 +1,10 @@
 # Together evaluations
 
-Start with one paid RAG cell:
+Start with one paid tool-calling cell:
 
 ```sh
 npm run preflight
-npm run hybrid -- --task rag-search --condition baseline
+npm run hybrid -- --task tool-calling-agent-loop --condition baseline
 ```
 
 The run uses Claude Code with Sonnet 4.6, scores with deterministic checks and
@@ -15,7 +15,6 @@ an Opus 4.8 Judge, saves results to the filesystem, and opens the Viewer.
 | Task | What it evaluates |
 | --- | --- |
 | `chat-app` | Chat completion, image generation, and transcription |
-| `rag-search` | Embeddings, local retrieval, and grounded answers |
 | `tool-calling-agent-loop` | Native Together tool calls with local mock tools |
 | `gpu-clusters` | GPU discovery and reservation-command generation; it never reserves a cluster |
 
@@ -28,10 +27,10 @@ Together's official `together-ai` skill. See
 | Command | Runs | Passing requires |
 | --- | ---: | --- |
 | `npm run chat-app` | 1 | Judge pass |
-| `npm run hybrid` | 6 | Required code checks and Judge pass |
-| `npm run legacy` | 12 | Judge pass; code checks are advisory |
+| `npm run hybrid` | 3 | Required code checks and Judge pass |
+| `npm run legacy` | 9 | Judge pass; code checks are advisory |
 
-`npm run showcase` is an alias for `npm run legacy`.
+`npm run showcase` runs `npm run legacy`.
 
 Use `--task` and `--condition` to run a smaller selection:
 
@@ -56,7 +55,8 @@ The code checks inspect objective evidence such as:
 - forbidden resource-creation calls.
 
 Local execution cannot capture HTTP traffic as trusted evidence, so traffic
-checks are skipped rather than passed. E2B can capture the required metadata.
+checks are skipped rather than passed. The Together sandbox captures the
+required metadata.
 
 Result-file checks prove structure, not semantic correctness or genuine API use.
 The Judge evaluates grounding, tool behavior, and other semantic requirements.
@@ -90,8 +90,12 @@ not compare `skills` results recorded with different skill commits.
 
 ## Optional backends
 
-Local execution and filesystem storage are the defaults. E2B and Postgres are
-opt-in beta backends. Follow the [backend setup guide](../../docs/beta-backends.md).
+Local execution and filesystem storage are the defaults. To run these Suites in
+the Together sandbox, pass `--runtime` with a copy of
+[`runtime/together.example.json`](runtime/together.example.json), which keeps
+the Opus 4.8 Judge and filesystem results; see
+[sandbox setup](../../docs/sandbox-setup.md#together-sandbox). Postgres is an
+opt-in beta backend; follow the [Postgres guide](../../docs/beta-backends.md).
 
 ## Catalogue-only tasks
 

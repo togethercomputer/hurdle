@@ -21,14 +21,20 @@ export async function atomicWrite(path, text, mode) {
   } finally { await rm(temp, { force: true }); }
 }
 
-export async function saveCredentials(cwd, values) {
+// Keeps the project's credentials and results out of git. Returns true when
+// .gitignore changed. Existing entries are kept; init and setup share this.
+export async function ignoreProjectFiles(cwd) {
   const ignore = join(cwd, ".gitignore");
   const ignored = await regularFileContents(ignore) ?? "";
   // Append last so an earlier negation cannot accidentally expose credentials.
   const protectedPaths = "/.env.local\n/.hurdle/\n/.tae/";
-  if (ignored.trimEnd().split("\n").slice(-3).join("\n") !== protectedPaths) {
-    await atomicWrite(ignore, `${ignored}${ignored.endsWith("\n") || !ignored ? "" : "\n"}${protectedPaths}\n`, 0o644);
-  }
+  if (ignored.trimEnd().split("\n").slice(-3).join("\n") === protectedPaths) return false;
+  await atomicWrite(ignore, `${ignored}${ignored.endsWith("\n") || !ignored ? "" : "\n"}${protectedPaths}\n`, 0o644);
+  return true;
+}
+
+export async function saveCredentials(cwd, values) {
+  await ignoreProjectFiles(cwd);
   if (!Object.keys(values).length) return;
   const path = join(cwd, ".env.local");
   const existing = await regularFileContents(path) ?? "";

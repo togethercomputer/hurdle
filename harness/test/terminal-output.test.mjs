@@ -26,7 +26,7 @@ test("init, validation, setup, and help share terminal styling without ANSI in r
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const original = process.env.NO_COLOR;
   t.after(() => original === undefined ? delete process.env.NO_COLOR : process.env.NO_COLOR = original);
-  const cli = createFrameworkCli({ env: {}, promptSetup: async () => null, checkAgentReadiness: async () => ({ ok: true, checks: [{ status: "pass", message: "Credentials verified" }] }), assertRuntimeDependencies() {} });
+  const cli = createFrameworkCli({ env: {}, promptSetup: async () => null, checkAgentReadiness: async () => ({ ok: true, checks: [{ status: "pass", message: "Credentials verified" }] }) });
   for (const [name, isTTY, noColor] of [["color", true, false], ["pipe", false, false], ["no-color", true, true]]) {
     if (noColor) process.env.NO_COLOR = "1"; else delete process.env.NO_COLOR;
     const capture = output(root, isTTY);
@@ -41,7 +41,7 @@ test("init, validation, setup, and help share terminal styling without ANSI in r
     assert.equal((text.match(/^Hurdle$/gm) ?? []).length, 4);
     assert.match(text, /✓ Evaluation created/);
     assert.match(text, /! Readiness not checked/);
-    assert.match(text, /✗ hurdle \[setup\.credentials-missing\] Missing credentials: E2B_API_KEY; ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN; TOGETHER_API_KEY\./);
+    assert.match(text, /✗ hurdle \[setup\.credentials-missing\] Missing credentials: TOGETHER_API_KEY; ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN\./);
     assert.ok(text.includes(`Next      ${sourceExecutable} setup ${name}/example.suite.mjs`));
     assert.equal(existsSync(join(root, ".hurdle")), false);
     if (isTTY && !noColor) {
@@ -69,7 +69,7 @@ test("custom-suite next steps are concise and round-trip shell metacharacters sa
     const command = line.slice(line.indexOf(sourceExecutable));
     const parsed = spawnSync("/bin/sh", ["-c", `set -- ${command}; printf '%s\\n' "$@"`], { cwd: root, encoding: "utf8" });
     assert.equal(parsed.status, 0, parsed.stderr);
-    assert.deepEqual(parsed.stdout.trimEnd().split("\n"), ["node", cliPath, command.includes(" setup ") ? "setup" : "run", suite, ...(command.endsWith(" --view") ? ["--view"] : [])]);
+    assert.deepEqual(parsed.stdout.trimEnd().split("\n"), ["node", cliPath, command.includes(" setup ") ? "setup" : "run", suite, ...(command.endsWith(" --view") ? ["--view"] : command.endsWith(" --yes") ? ["--yes"] : [])]);
   }
   assert.equal(existsSync(join(root, "unexpected")), false);
   assert.equal(quoteCommandArgument("evals/together-api/example.suite.mjs"), "evals/together-api/example.suite.mjs");
@@ -132,12 +132,12 @@ test("source runtime tools share formatting without making provider requests", t
   const run = (file, args = []) => spawnSync(process.execPath, [fileURLToPath(new URL(`../bin/${file}`, import.meta.url)), ...args], {
     cwd, encoding: "utf8", env: { PATH: process.env.PATH },
   });
-  const created = run("init-runtime.mjs", ["e2b", "--template", "example:v1"]);
+  const created = run("init-runtime.mjs", ["together"]);
   assert.equal(created.status, 0, created.stderr);
   assert.match(created.stdout, /Hurdle\n\n✓ Runtime created/);
-  assert.match(created.stdout, /Runtime   \.hurdle\/runtime\/e2b.json/);
+  assert.match(created.stdout, /Runtime   \.hurdle\/runtime\/together.json/);
   assert.match(created.stdout, /Next      npm run preflight/);
-  const duplicate = run("init-runtime.mjs", ["e2b", "--template", "example:v1"]);
+  const duplicate = run("init-runtime.mjs", ["together"]);
   assert.equal(duplicate.status, 1);
   assert.match(duplicate.stderr, /^✗ .*already exists/);
   const checked = run("preflight.mjs");

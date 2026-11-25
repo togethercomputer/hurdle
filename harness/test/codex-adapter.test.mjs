@@ -39,8 +39,8 @@ test("Codex Adapter creates a bounded launch plan from normalized settings", () 
       PATH: "/test/bin",
       HOME: "/test/home",
       CODEX_HOME: "/test/codex-home",
-      CODEX_ACCESS_TOKEN: "selected-access-token",
-      CODEX_API_KEY: "unselected-codex-key",
+      CODEX_ACCESS_TOKEN: "ignored-access-token",
+      CODEX_API_KEY: "selected-codex-key",
       OPENAI_API_KEY: "unselected-openai-key",
       UNRELATED_SECRET: "must-not-reach-codex",
     },
@@ -85,8 +85,14 @@ test("Codex Adapter creates a bounded launch plan from normalized settings", () 
     env: {
       PATH: "/test/bin",
       HOME: "/test/home",
-      CODEX_ACCESS_TOKEN: "selected-access-token",
+      CODEX_API_KEY: "selected-codex-key",
     },
+    // Only the API key: a ChatGPT access token never reaches Codex.
+    credentialRoutes: [{
+      environmentName: "CODEX_API_KEY",
+      hosts: ["api.openai.com"],
+      headerNames: ["authorization"],
+    }],
     stdin: "Copy the fixture.",
     timeoutMs: 5_000,
     workspaceFiles: [],
@@ -96,7 +102,7 @@ test("Codex Adapter creates a bounded launch plan from normalized settings", () 
   assert.equal(Object.isFrozen(plan.env), true);
   assert.equal(
     adapter.redactControllerText(
-      "selected-access-token unselected-codex-key unselected-openai-key",
+      "ignored-access-token selected-codex-key unselected-openai-key",
     ),
     "<REDACTED> <REDACTED> <REDACTED>",
   );

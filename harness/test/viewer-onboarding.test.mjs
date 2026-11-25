@@ -23,7 +23,7 @@ test("Viewer commands use npx and preserve selected Suite/Runtime arguments as l
   const context = createViewerOnboarding({
     cwd, cliPath: "/unused/cli.mjs", sourceCheckout: true,
     suite: "evals/custom '$(echo unexpected)' suite.suite.mjs",
-    runtimeProfile: { sourcePath: join(cwd, "runtime ' file.json"), environment: { kind: "e2b" } },
+    runtimeProfile: { sourcePath: join(cwd, "runtime ' file.json"), environment: { kind: "together" } },
   });
   const result = spawnSync("/bin/sh", [], {
     input: context.commands, encoding: "utf8", cwd,
@@ -33,7 +33,7 @@ test("Viewer commands use npx and preserve selected Suite/Runtime arguments as l
   assert.deepEqual(readFileSync(capture, "utf8").trim().split("\n").map(JSON.parse), [
     ["hurdle", "run", "custom '$(echo unexpected)' suite", "--runtime", "runtime ' file.json", "--view"],
   ]);
-  assert.equal(context.runtimeLabel, "E2B sandbox");
+  assert.equal(context.runtimeLabel, "Together sandbox");
   assert.doesNotMatch(context.commands, /alias|node |cd |validate/);
 });
 
@@ -50,7 +50,7 @@ test("installed Viewer commands select the requested Local store rather than a d
 test("a store override conflicting with a saved Runtime does not suggest an incorrect run", () => {
   const context = createViewerOnboarding({
     cwd: "/project", cliPath: "/package/cli.mjs", sourceCheckout: false, suite: "example.suite.mjs", storeOverride: true,
-    runtimeProfile: { sourcePath: "/project/runtime.json", environment: { kind: "e2b" } },
+    runtimeProfile: { sourcePath: "/project/runtime.json", environment: { kind: "together" } },
   });
   assert.equal(context.commands, null);
 });

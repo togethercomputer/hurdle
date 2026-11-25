@@ -98,8 +98,11 @@ test('catalog failures retain useful fallback choices and never change credentia
  const provider = await discoverModels({ agent: 'codex', env: { OPENAI_API_KEY: key } }, { spawn: failed.spawn, fetch: async () => json({ data: [{ id: 'provider-id' }] }) });
  assert.equal(provider.compatibility, 'provider-catalog'); assert.equal(provider.warnings.length, 1);
  const f = codex(t);
- const native = await discoverModels({ agent: 'codex', env: { CODEX_ACCESS_TOKEN: key, OPENAI_API_KEY: 'different-account' } }, { spawn: f.spawn, fetch() { assert.fail('subscription token wins'); } });
- assert.equal(native.compatibility, 'agent-catalog');
+ // A ChatGPT access token is ignored: the API key is used, and the token never reaches Codex.
+ let queried = null;
+ const native = await discoverModels({ agent: 'codex', env: { CODEX_ACCESS_TOKEN: 'chatgpt-token', OPENAI_API_KEY: key } }, { spawn: f.spawn, fetch: async (_url, options) => { queried = options.headers.authorization; return json({ data: [{ id: 'provider-id' }] }); } });
+ assert.equal(queried, `Bearer ${key}`);
+ assert.equal(JSON.parse(readFileSync(f.marker, 'utf8')).keys.includes('CODEX_ACCESS_TOKEN'), false);
  const fallback = await discoverModels({ agent: 'codex', env: { OPENAI_API_KEY: key } }, { spawn: f.spawn, fetch: async () => new Response(key, { status: 401 }) });
  assert.equal(fallback.compatibility, 'agent-catalog'); assert.equal(fallback.warnings.length, 1);
  assert.match(fallback.warnings[0], /OpenAI rejected the configured API key/);

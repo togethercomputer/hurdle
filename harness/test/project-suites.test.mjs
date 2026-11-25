@@ -96,7 +96,7 @@ test("setup, validate and run resolve the same short name and a sole Suite remai
   assert.equal((await initializeSuite({ destination: join(f.root, "evals/sandbox-smoke") })).ok, true);
   const paths = [];
   const cli = createFrameworkCli({
-    env: {}, processTarget: new EventEmitter(), assertRuntimeDependencies() {},
+    env: {}, processTarget: new EventEmitter(),
     async resolveV1Suite(options) { paths.push(options.suitePath); return resolveV1Suite(options); },
     async checkAgentReadiness() { return { ok: false, checks: [{ status: "fail", message: "No test Agent credentials." }] }; },
     loadSetupBackend() { assert.fail("No provider requests allowed"); },
@@ -177,7 +177,7 @@ test("setup typo guidance preserves the requested sandbox, uses the existing Sui
     });
     assert.equal(await cli.main(["setup", "---store", "postgres", "--sandbox", "together", ...(json ? ["--json"] : [])], f.io), 2);
     const commands = [
-      "node harness/bin/hurdle.mjs setup sandbox-smoke --sandbox together",
+      "node harness/bin/hurdle.mjs setup sandbox-smoke",
       "node harness/bin/hurdle.mjs setup --store postgres",
     ];
     if (json) {
@@ -200,7 +200,7 @@ test("setup reports missing values, duplicates and incompatible options before a
   for (const [args, message] of [
     [["--sandbox"], /'--sandbox' requires a value/],
     [["--sandbox", "--yes"], /'--sandbox' requires a value/],
-    [["--sandbox", "together", "--sandbox", "e2b"], /'--sandbox' may only be supplied once/],
+    [["--sandbox", "together", "--sandbox", "together"], /'--sandbox' may only be supplied once/],
     [["--yes", "--yes"], /'--yes' may only be supplied once/],
     [["--store", "postgres", "--sandbox", "together"], /cannot be combined with sandbox options/],
   ]) {
@@ -219,7 +219,7 @@ test("a Suite named together does not change the default sandbox in setup recove
   f.file("evals/together/example.suite.mjs");
   assert.equal(await createFrameworkCli().main(["setup", "together", "--unknown", "--json"], f.io), 2);
   const report = JSON.parse(f.stdout());
-  assert.equal(report.nextCommands[0], `${sourceExecutable} setup together --sandbox e2b`);
+  assert.equal(report.nextCommands[0], `${sourceExecutable} setup together`);
   assert.equal(f.stderr(), "");
 });
 
@@ -230,8 +230,7 @@ test("help shows project-specific examples without credentials and safely quotes
   assert.equal(await main(["help", "setup"], f.io), 0);
   assert.doesNotMatch(f.stdout(), /Available Suites/);
   assert.ok(f.stdout().includes(`${sourceExecutable} setup 'smoke test'`));
-  assert.match(f.stdout(), /setup 'smoke test' +# E2B sandbox \(default\)/);
-  assert.ok(f.stdout().includes(`${sourceExecutable} setup 'smoke test' --sandbox together`));
+  assert.match(f.stdout(), /setup 'smoke test' +# Together sandbox/);
   assert.ok(f.stdout().includes(`${sourceExecutable} setup --store postgres`));
   assert.ok(f.stdout().includes(`${sourceExecutable} run 'smoke test' --view`));
   assert.equal(f.stderr(), "");
@@ -346,7 +345,7 @@ test("Suite inspection reads the shared Runtime or explicit override without res
     assert.equal((await initializeSuite({ destination: join(f.root, "codex-evals"), agent: "codex" })).ok, true);
     f.file(".hurdle/runtime/default.json", JSON.stringify({
       schemaVersion: 1,
-      environment: { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: { snapshotAlias: "codex-smoke@v1" } },
+      environment: { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: {} },
       resultStore: { kind: "postgres", databaseUrlEnv: "DATABASE_URL", artifactRoot: "../artifacts" },
     }));
     const alternate = "profiles/runtime with spaces.json";
@@ -360,7 +359,8 @@ test("Suite inspection reads the shared Runtime or explicit override without res
     assert.equal(report.runtime.sourcePath, join(f.root, explicit ? alternate : ".hurdle/runtime/default.json"));
     assert.equal(report.runtime.environment.kind, explicit ? "local" : "together");
     if (!explicit) {
-      assert.equal(report.runtime.environment.settings.memoryMiB, 2048);
+      assert.equal(report.runtime.environment.settings.maxLifetimeMs, 3_600_000);
+      assert.equal(report.runtime.environment.settings.memoryMiB, undefined);
       assert.equal(report.runtime.resultStore.databaseUrlEnv, "DATABASE_URL");
     }
     let text = "";
@@ -394,11 +394,11 @@ test("runtime inspection uses the same default, project, legacy and explicit pro
   }
 });
 
-test("runtime inspection reports Together and E2B effective limits and Postgres credential names without resolving credentials or opening services", async t => {
-  for (const kind of ["together", "e2b"]) {
+test("runtime inspection reports Together effective limits and Postgres credential names without resolving credentials or opening services", async t => {
+  for (const kind of ["together"]) {
     for (const json of [true, false]) {
       const f = fixture(t);
-      const settings = kind === "together" ? { snapshotAlias: "test-snapshot", maxLifetimeMs: 600_000 } : { workloadTemplate: "test-template" };
+      const settings = { maxLifetimeMs: 600_000 };
       f.file(".hurdle/runtime/default.json", JSON.stringify({
         schemaVersion: 1, environment: { kind, apiKeyEnv: "SANDBOX_KEY", settings },
         resultStore: { kind: "postgres", databaseUrlEnv: "DATABASE_URL", artifactRoot: "../artifacts" },
@@ -407,21 +407,20 @@ test("runtime inspection reports Together and E2B effective limits and Postgres 
       const cli = createFrameworkCli({
         env: new Proxy({}, { get: forbidden }), resolveV1Suite: forbidden, checkAgentReadiness: forbidden,
         openLocalResultStore: forbidden, openPostgresResultStore: forbidden,
-        createTogetherExecutionEnvironment: forbidden, createE2BExecutionEnvironment: forbidden,
+        createTogetherExecutionEnvironment: forbidden,
       });
       assert.equal(await cli.main(["runtime", ...(json ? ["--json"] : [])], f.io), 0);
       if (json) {
         const { runtime } = JSON.parse(f.stdout());
         assert.equal(runtime.environment.kind, kind);
-        assert.equal(runtime.environment.settings.cpuCount, kind === "together" ? 1 : 2);
-        assert.equal(runtime.environment.settings.memoryMiB, kind === "together" ? 2048 : 512);
-        assert.equal(runtime.environment.settings.maxLifetimeMs, kind === "together" ? 600_000 : 3_600_000);
+        assert.deepEqual(Object.keys(runtime.environment.settings), ["maxLifetimeMs"]);
+        assert.equal(runtime.environment.settings.maxLifetimeMs, 600_000);
         assert.deepEqual(runtime.resultStore, { kind: "postgres", databaseUrlEnv: "DATABASE_URL", artifactRoot: join(f.root, ".hurdle/artifacts") });
       } else {
         assert.match(f.stdout(), /Store\s+Postgres/);
         assert.match(f.stdout(), /Database\s+DATABASE_URL \(environment variable\)/);
-        assert.match(f.stdout(), kind === "together" ? /Snapshot\s+test-snapshot/ : /Template\s+test-template/);
-        assert.match(f.stdout(), kind === "together" ? /1 CPU · 2048 MiB · 10m max/ : /2 CPUs · 512 MiB · 60m max/);
+        assert.match(f.stdout(), /Image\s+Together's Hurdle image/);
+        assert.match(f.stdout(), /Limits\s+10m max/);
       }
       assert.equal(f.stderr(), "");
       assert.equal(existsSync(join(f.root, ".hurdle/artifacts")), false);
@@ -444,11 +443,9 @@ test("runtime inspection reports invalid arguments and profiles as single JSON e
     [["--store", "results"], "argument-error"],
     [["--runtime", "missing.json"], "runtime.profile-read"],
     [["--runtime", "invalid.json"], "runtime.profile-schema"],
-    [["--runtime", "invalid-e2b.json"], "runtime.profile-schema"],
   ]) {
     const f = fixture(t);
     f.file("invalid.json", JSON.stringify({ schemaVersion: 1, environment: { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: { apiKey: "must-not-display" } }, resultStore: { kind: "local", root: "results" } }));
-    f.file("invalid-e2b.json", JSON.stringify({ schemaVersion: 1, environment: { kind: "e2b", apiKeyEnv: "E2B_API_KEY", settings: { workloadTemplate: "REPLACE_WITH_TEMPLATE" } }, resultStore: { kind: "local", root: "results" } }));
     assert.equal(await main(["runtime", ...args, "--json"], f.io), 2);
     const report = JSON.parse(f.stdout());
     assert.equal(report.error.code, expectedCode);

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_RUN_CONCURRENCY, mapConcurrentRunCells, normalizeRunConcurrency } from "./run-concurrency.mjs";
+import { credentialRoutesAreValid } from "./agent-credential-routes.mjs";
 
 import { runDeterministicEvaluator } from "./evaluator-runtime.mjs";
 import { evaluateAuthority } from "./evaluation-authority.mjs";
@@ -335,6 +336,7 @@ async function persistEgressCollections(
   selectedFieldNames,
   exchangeFactProfiles,
   blockedRequests,
+  relevantHosts = null,
 ) {
   const normalized = normalizeEgressCollections({
     collections: observed.egressCollections ?? [{
@@ -352,6 +354,7 @@ async function persistEgressCollections(
     selectedFieldNames,
     exchangeFactProfiles,
     blockedRequests,
+    relevantHosts,
     redactText: (value) => redactTargetText(value, credentials),
   });
   const manifest = [];
@@ -480,6 +483,8 @@ function assertValidLaunchPlan(launchPlan) {
     || launchPlan.stdin instanceof Uint8Array;
   const timeoutValid = launchPlan?.timeoutMs === undefined
     || (Number.isSafeInteger(launchPlan.timeoutMs) && launchPlan.timeoutMs > 0);
+  const credentialRoutesValid = envValid
+    && credentialRoutesAreValid(launchPlan?.credentialRoutes, launchPlan?.env);
   const workspaceFilesValid = launchPlan?.workspaceFiles === undefined || (
     Array.isArray(launchPlan.workspaceFiles)
     && launchPlan.workspaceFiles.every((file) => (
@@ -517,6 +522,7 @@ function assertValidLaunchPlan(launchPlan) {
     || !envValid
     || !stdinValid
     || !timeoutValid
+    || !credentialRoutesValid
     || !workspaceFilesValid
     || !workspaceLayoutValid
   ) {
@@ -829,6 +835,7 @@ async function runOne({
         prepared.snapshot.target.egress.selectedFields,
         prepared.snapshot.target.egress.exchangeFactProfiles,
         prepared.snapshot.target.egress.blockedRequests,
+        prepared.snapshot.target.egress.relevantHosts,
       );
       const authorityFields = authorityRecordFields({
         snapshot: prepared.snapshot,
@@ -1012,6 +1019,7 @@ async function runOne({
       prepared.snapshot.target.egress.selectedFields,
       prepared.snapshot.target.egress.exchangeFactProfiles,
       prepared.snapshot.target.egress.blockedRequests,
+      prepared.snapshot.target.egress.relevantHosts,
     );
     const evaluatorArtifacts = artifacts.map((artifact) => {
       const sealed = artifactManifest.find(({ path }) => path === artifact.path);

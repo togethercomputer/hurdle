@@ -165,7 +165,7 @@ test("quickstart progress rewrites one restrained status line in a TTY", () => {
   );
 });
 
-test("terminal progress updates a cell and preserves E2B details around the spinner", () => {
+test("terminal progress updates a cell and preserves sandbox details around the spinner", () => {
   let output = "";
   const progress = createTerminalProgress({
     isTTY: true,
@@ -175,7 +175,7 @@ test("terminal progress updates a cell and preserves E2B details around the spin
 
   progress.start("Running evaluations");
   progress.update("[1/6] rag-search · baseline · Claude Code");
-  progress.detail("Sandbox E2B  sandbox-agent-1  https://e2b.dev/dashboard");
+  progress.detail("Sandbox together  sandbox-agent-1  https://sandbox.example/dashboard");
   progress.succeed("[1/6] rag-search · baseline · pass", "42s");
   progress.update("[2/6] rag-search · mcp · Claude Code");
 
@@ -183,7 +183,7 @@ test("terminal progress updates a cell and preserves E2B details around the spin
     output,
     "\r\u001b[2K⠋ Running evaluations"
       + "\r\u001b[2K⠙ [1/6] rag-search · baseline · Claude Code"
-      + "\r\u001b[2K  Sandbox E2B  sandbox-agent-1  https://e2b.dev/dashboard\n"
+      + "\r\u001b[2K  Sandbox together  sandbox-agent-1  https://sandbox.example/dashboard\n"
       + "\r\u001b[2K⠹ [1/6] rag-search · baseline · Claude Code"
       + "\r\u001b[2K✓ [1/6] rag-search · baseline · pass  42s\n"
       + "\r\u001b[2K⠋ [2/6] rag-search · mcp · Claude Code",
@@ -227,13 +227,13 @@ test("terminal progress emits stable incremental lines outside a TTY", () => {
 
   progress.start("Running evaluations");
   progress.update("[1/6] rag-search · baseline · Claude Code");
-  progress.detail("Agent environment  sandbox-agent-1  https://e2b.dev/dashboard");
+  progress.detail("Agent environment  sandbox-agent-1  https://sandbox.example/dashboard");
 
   assert.equal(
     output,
     "- Running evaluations\n"
       + "- [1/6] rag-search · baseline · Claude Code\n"
-      + "  Agent environment  sandbox-agent-1  https://e2b.dev/dashboard\n",
+      + "  Agent environment  sandbox-agent-1  https://sandbox.example/dashboard\n",
   );
 });
 

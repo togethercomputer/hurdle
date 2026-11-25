@@ -1,14 +1,14 @@
 import { normalizePostgresConnectionString, postgresConnectionFailure } from "./postgres-connection-string.mjs";
-import { backendDependencyInstallCommand } from "./backend-dependencies.mjs";
 import { hurdleEnvironmentValue, RESULT_STORE_DATABASE_URL_ENV } from "./hurdle-environment.mjs";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
-const TOGETHER_EMBEDDINGS_URL = "https://api.together.xyz/v1/embeddings";
 const TOGETHER_CHAT_URL = "https://api.together.xyz/v1/chat/completions";
 
 const ANTHROPIC_MODEL = "claude-sonnet-4-6";
-const TOGETHER_EMBEDDING_MODEL = "intfloat/multilingual-e5-large-instruct";
-const TOGETHER_CHAT_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo";
+// Together's model list still includes retired models, so only a completion
+// proves a model is served. Together offers no serverless embedding models,
+// so preflight checks the key with one native tool call only.
+const TOGETHER_CHAT_MODEL = "Qwen/Qwen3.5-9B";
 const REQUEST_TIMEOUT_MS = 20_000;
 const RESPONSE_LIMIT_BYTES = 64 * 1024;
 
@@ -38,6 +38,9 @@ function knownProviderFailure(provider, response, body) {
     : typeof body?.message === "string" ? body.message : "";
   if (/credit balance|insufficient (?:credit|funds)|billing/iu.test(message)) {
     return result(provider, "fail", "authenticated, but the credit balance is too low");
+  }
+  if (body?.error?.code === "model_not_available") {
+    return result(provider, "fail", "authenticated, but the preflight model is no longer served; Hurdle needs an update");
   }
   if ([401, 403].includes(response?.status)) {
     return result(provider, "fail", `credential rejected (HTTP ${response.status})`);
@@ -82,23 +85,13 @@ export async function checkAnthropicCredential(apiKey, { fetch = globalThis.fetc
 export async function checkTogetherCredential(apiKey, { fetch = globalThis.fetch } = {}) {
   if (!apiKey?.trim()) return result("Together", "skip", "TOGETHER_API_KEY is not set");
   try {
-    const embeddingsResponse = await postJson(fetch, TOGETHER_EMBEDDINGS_URL, {
-      headers: { authorization: `Bearer ${apiKey}` },
-      body: { model: TOGETHER_EMBEDDING_MODEL, input: ["Hurdle preflight"] },
-    });
-    const embeddingsBody = await boundedJson(embeddingsResponse);
-    if (!embeddingsResponse.ok) {
-      return knownProviderFailure("Together", embeddingsResponse, embeddingsBody);
-    }
-    if (!Array.isArray(embeddingsBody?.data?.[0]?.embedding)) {
-      return result("Together", "fail", "embeddings returned an unexpected response");
-    }
-
     const chatResponse = await postJson(fetch, TOGETHER_CHAT_URL, {
       headers: { authorization: `Bearer ${apiKey}` },
       body: {
         model: TOGETHER_CHAT_MODEL,
         max_tokens: 32,
+        // Reasoning would spend the token budget before the tool call.
+        reasoning: { enabled: false },
         messages: [{ role: "user", content: "Use the preflight tool once." }],
         tools: [{
           type: "function",
@@ -116,39 +109,9 @@ export async function checkTogetherCredential(apiKey, { fetch = globalThis.fetch
     if (!Array.isArray(chatBody?.choices?.[0]?.message?.tool_calls)) {
       return result("Together", "fail", "native tool calling returned an unexpected response");
     }
-    return result("Together", "pass", "embeddings and native tool calling succeeded");
+    return result("Together", "pass", `${TOGETHER_CHAT_MODEL} native tool calling succeeded`);
   } catch {
     return result("Together", "fail", "request could not reach the provider");
-  }
-}
-
-// Only 401/403 prove a bad key; rate limits, timeouts and outages are retried
-// once and then reported as unavailability rather than a rejected credential.
-function e2bRejected(error) {
-  return error?.name === "AuthenticationError" || /^403\b/.test(String(error?.message ?? ""));
-}
-
-export async function checkE2bCredential(apiKey, { loadE2b, retryDelayMs = 1_000 } = {}) {
-  if (!apiKey?.trim()) return result("E2B", "skip", "E2B_API_KEY is not set");
-  let Sandbox;
-  try {
-    ({ Sandbox } = await (loadE2b ?? (() => import("e2b")))());
-  } catch (error) {
-    if (error?.code === "ERR_MODULE_NOT_FOUND") {
-      return result("E2B", "fail", `backend dependencies are not installed; run ${backendDependencyInstallCommand()}`);
-    }
-    return result("E2B", "fail", "the E2B SDK could not be loaded");
-  }
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      const paginator = Sandbox.list({ apiKey, limit: 1, requestTimeoutMs: REQUEST_TIMEOUT_MS });
-      await paginator.nextItems();
-      return result("E2B", "pass", "account access succeeded; no sandbox was created");
-    } catch (error) {
-      if (e2bRejected(error)) return result("E2B", "fail", "credential or account access was rejected");
-      if (attempt >= 2) return result("E2B", "fail", "E2B could not be reached or returned an error; check your network and retry");
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-    }
   }
 }
 
@@ -189,20 +152,6 @@ export async function runCredentialPreflight(environment, dependencies = {}) {
   return Promise.all([
     checkAnthropicCredential(environment.ANTHROPIC_API_KEY, dependencies),
     checkTogetherCredential(environment.TOGETHER_API_KEY, dependencies),
-    checkE2bCredential(environment.E2B_API_KEY, dependencies),
     checkPostgresCredential(hurdleEnvironmentValue(environment, RESULT_STORE_DATABASE_URL_ENV), dependencies),
   ]);
-}
-
-// Read-only access check; never allocate a VM or retain provider response data.
-export async function checkTogetherSandboxCredential(apiKey, { loadSdk = () => import('together-sandbox') } = {}) {
-  if (typeof apiKey !== 'string' || !apiKey.trim()) return { status: 'fail', message: 'sandbox API key is missing' };
-  try {
-    const { TogetherSandbox } = await loadSdk();
-    const sdk = new TogetherSandbox({ apiKey, baseUrl: 'https://api.bartender.codesandbox.io', retry: { maxAttempts: 1 } });
-    await sdk.snapshots.list({ limit: 1 });
-    return { status: 'pass', message: 'sandbox API access verified' };
-  } catch (error) {
-    return { status: 'fail', message: error.status === 401 || error.status === 403 ? 'sandbox access denied; check the key and organization enablement' : 'sandbox API access could not be verified' };
-  }
 }

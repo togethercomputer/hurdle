@@ -78,7 +78,7 @@ test("resolveRuntimeProfile rejects duplicate decoded JSON keys and closed-profi
   const cwd = resolve("/workspace/current");
   const invalidProfiles = [
     [
-      '{"schemaVersion":1,"environment":{"kind":"local","kind":"e2b"},"resultStore":{"kind":"local","root":"results"}}',
+      '{"schemaVersion":1,"environment":{"kind":"local","kind":"together"},"resultStore":{"kind":"local","root":"results"}}',
       "runtime.profile-json",
     ],
     [
@@ -86,7 +86,7 @@ test("resolveRuntimeProfile rejects duplicate decoded JSON keys and closed-profi
       "runtime.profile-schema",
     ],
     [
-      '{"schemaVersion":1,"environment":{"kind":"e2b","apiKeyEnv":"E2B_${ENV}"},"resultStore":{"kind":"local","root":"results"}}',
+      '{"schemaVersion":1,"environment":{"kind":"together","apiKeyEnv":"TOGETHER_${ENV}"},"resultStore":{"kind":"local","root":"results"}}',
       "runtime.profile-schema",
     ],
     [
@@ -94,7 +94,7 @@ test("resolveRuntimeProfile rejects duplicate decoded JSON keys and closed-profi
       "runtime.profile-schema",
     ],
     [
-      '{"schemaVersion":1,"environment":{"kind":"e2b","apiKeyEnv":"E2B_KEY","settings":{"cpuCount":0}},"resultStore":{"kind":"local","root":"results"}}',
+      '{"schemaVersion":1,"environment":{"kind":"together","apiKeyEnv":"TOGETHER_KEY","settings":{"maxLifetimeMs":0}},"resultStore":{"kind":"local","root":"results"}}',
       "runtime.profile-schema",
     ],
     [
@@ -124,7 +124,7 @@ test("Runtime Profile exposes a fixed Judge capability without reading its crede
     {
       readFile: () => JSON.stringify({
         schemaVersion: 1,
-        environment: { kind: "e2b", apiKeyEnv: "E2B_KEY" },
+        environment: { kind: "together", apiKeyEnv: "TOGETHER_KEY" },
         resultStore: {
           kind: "postgres",
           databaseUrlEnv: "DATABASE_URL",
@@ -149,20 +149,20 @@ test("Runtime Profile exposes a fixed Judge capability without reading its crede
   });
   assert.deepEqual(
     resolveRuntimeSecrets(profile, {
-      E2B_KEY: "e2b-secret",
+      TOGETHER_KEY: "together-secret",
       DATABASE_URL: "postgres-secret",
       ANTHROPIC_API_KEY: "judge-secret",
     }),
-    { e2bApiKey: "e2b-secret", postgresDatabaseUrl: "postgres-secret" },
+    { togetherApiKey: "together-secret", postgresDatabaseUrl: "postgres-secret" },
   );
   assert.deepEqual(
     resolveRuntimeSecrets(
       profile,
-      { E2B_KEY: "e2b-secret", DATABASE_URL: "postgres-secret", ANTHROPIC_API_KEY: "judge-secret" },
+      { TOGETHER_KEY: "together-secret", DATABASE_URL: "postgres-secret", ANTHROPIC_API_KEY: "judge-secret" },
       { judge: true },
     ),
     {
-      e2bApiKey: "e2b-secret",
+      togetherApiKey: "together-secret",
       postgresDatabaseUrl: "postgres-secret",
       judgeCredential: "judge-secret",
     },

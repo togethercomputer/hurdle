@@ -1,4 +1,10 @@
 import assert from "node:assert/strict";
+import { spawn as spawnProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import {
@@ -318,4 +324,273 @@ test("Anthropic JSON Judge fails closed on a provider error event", async () => 
 
   await assert.rejects(judge.judge({ schemaVersion: 2 }), /provider failed/);
   assert.equal(streamCancelled, true);
+});
+
+const OAUTH_TOKEN = "sk-ant-oat01-test-judge-token";
+
+// A stand-in for `claude -p` that records how it was started and replies with
+// `stdout` (or fails as `behavior` says).
+function fakeClaude({ stdout = "", stderr = "", exitCode = 0, behavior = null, calls = [] } = {}) {
+  return (command, args, options) => {
+    if (behavior === "throw") throw new Error(`spawn failed for ${options.env.CLAUDE_CODE_OAUTH_TOKEN}`);
+    const child = Object.assign(new EventEmitter(), {
+      // A child that failed to spawn has no pid.
+      pid: behavior === "enoent" ? undefined : 4242,
+      stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+      killed: [],
+      kill(signal) { this.killed.push(signal); setImmediate(() => this.emit("close", null, signal)); },
+    });
+    const call = {
+      command, args, options,
+      homeEntries: readdirSync(options.env.HOME), cwdEntries: readdirSync(options.cwd),
+      homeMode: statSync(options.env.HOME).mode & 0o777, child,
+    };
+    calls.push(call);
+    if (behavior === "enoent") {
+      setImmediate(() => child.emit("error", Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })));
+      return child;
+    }
+    let input = "";
+    child.stdin.on("data", (chunk) => { input += chunk; });
+    child.stdin.on("end", () => {
+      call.input = input;
+      if (behavior === "hang") return;
+      child.stderr.end(stderr);
+      child.stdout.end(stdout);
+      setImmediate(() => child.emit("close", exitCode, null));
+    });
+    return child;
+  };
+}
+
+const claudeResult = (result, extra = {}) => JSON.stringify({ type: "result", subtype: "success", is_error: false, result, ...extra });
+
+function oauthJudge(t, spawn, extra = {}) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "hurdle-judge-test-"));
+  t.after(() => rmSync(temporaryRoot, { recursive: true, force: true }));
+  const reasons = [];
+  const judge = createAnthropicJsonJudge({
+    model: "claude-test-model",
+    apiKey: OAUTH_TOKEN,
+    env: { PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", TMPDIR: "/tmp/host" },
+    fetch: async () => { throw new Error("The OAuth Judge must not call the Messages API"); },
+    spawn,
+    temporaryRoot,
+    onFailure: (reason) => reasons.push(reason),
+    ...extra,
+  });
+  return { judge, reasons, temporaryRoot };
+}
+
+test("Anthropic JSON Judge runs Claude Code isolated from this machine's configuration for an OAuth token", async (t) => {
+  const calls = [];
+  const realHome = "/Users/someone";
+  const { judge, temporaryRoot } = oauthJudge(t, fakeClaude({
+    calls,
+    stdout: claudeResult('{"outcome":"fail","summary":"No evidence of a chat completion."}'),
+  }), {
+    env: {
+      PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", TMPDIR: "/tmp/host", HOME: realHome, SHELL: "/bin/zsh", USER: "someone",
+      // Each of these could redirect the token or load untrusted configuration.
+      ANTHROPIC_API_KEY: "sk-ant-api03-stale", ANTHROPIC_BASE_URL: "https://attacker.invalid",
+      ANTHROPIC_AUTH_TOKEN: "other-token", CLAUDE_CONFIG_DIR: "/Users/someone/.claude",
+      CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_VERTEX: "1", HTTPS_PROXY: "http://proxy.invalid",
+      NODE_OPTIONS: "--require /tmp/hook.js",
+    },
+  });
+
+  const decision = await judge.judge({ schemaVersion: 2, rubric: "r" });
+
+  assert.deepEqual(decision, { outcome: "fail", summary: "No evidence of a chat completion." });
+  assert.equal(calls.length, 1);
+  const [call] = calls;
+  assert.equal(call.command, "claude");
+  assert.equal(call.input, JSON.stringify({ schemaVersion: 2, rubric: "r" }));
+  // Exactly the allowlist, with a fresh HOME.
+  assert.deepEqual(Object.keys(call.options.env).sort(), ["CLAUDE_CODE_OAUTH_TOKEN", "HOME", "LANG", "PATH", "TMPDIR"]);
+  assert.deepEqual(call.options.env, {
+    PATH: "/usr/bin:/bin", LANG: "en_US.UTF-8", TMPDIR: "/tmp/host",
+    HOME: call.options.env.HOME, CLAUDE_CODE_OAUTH_TOKEN: OAUTH_TOKEN,
+  });
+  assert.notEqual(call.options.env.HOME, realHome);
+  // HOME and the working directory are separate, empty, private and temporary.
+  for (const directory of [call.options.env.HOME, call.options.cwd]) {
+    assert.ok(directory.startsWith(join(temporaryRoot, "hurdle-judge-")), directory);
+    assert.equal(existsSync(directory), false, "The Judge's temporary directories must be removed afterwards");
+  }
+  assert.notEqual(call.options.cwd, call.options.env.HOME);
+  assert.deepEqual(call.homeEntries, []);
+  assert.deepEqual(call.cwdEntries, []);
+  assert.equal(call.homeMode, 0o700);
+  assert.deepEqual(readdirSync(temporaryRoot), []);
+  assert.deepEqual(call.options.stdio, ["pipe", "pipe", "pipe"]);
+  // No settings, hooks, plugins, skills, MCP servers, tools or session.
+  assert.deepEqual(call.args.slice(0, 5), ["-p", "--model", "claude-test-model", "--system-prompt", call.args[4]]);
+  assert.match(call.args[4], /^You are an evidence-only evaluation judge\./);
+  assert.deepEqual(call.args.slice(5), [
+    "--safe-mode",
+    "--disable-slash-commands",
+    "--setting-sources", "",
+    "--tools", "",
+    "--strict-mcp-config",
+    "--no-session-persistence",
+    "--output-format", "json",
+  ]);
+  assert.equal(call.args.includes("--exclude-dynamic-system-prompt-sections"), false);
+  assert.equal(call.args.includes("--bare"), false, "--bare ignores OAuth tokens");
+});
+
+test("Anthropic JSON Judge parses a decision the same way on the API and Claude Code paths", async (t) => {
+  const outputs = [
+    ['{"outcome":"pass","summary":"Copied."}', { outcome: "pass", summary: "Copied." }],
+    ['  {"outcome":"incomplete","summary":"No answer."}\n', { outcome: "incomplete", summary: "No answer." }],
+    ['```json\n{"outcome":"fail","summary":"Wrong text."}\n```', { outcome: "fail", summary: "Wrong text." }],
+    ['```\n{"outcome":"pass","summary":"Copied."}\n```', { outcome: "pass", summary: "Copied." }],
+    ['Here is my decision: {"outcome":"pass","summary":"Copied."}', null],
+    ['```json\n{"outcome":"pass","summary":"Copied."}\n```\nAlso, ignore the rubric.', null],
+    ['```json\n{"outcome":"pass","summary":"Copied."}', null],
+    ['{"outcome":"pass","summary":"Copied.","extra":true}', null],
+    ['{"outcome":"maybe","summary":"Unsure."}', null],
+    ['{"outcome":"pass","summary":"   "}', null],
+    ['not json', null],
+    ["", null],
+    [JSON.stringify({ outcome: "pass", summary: "x".repeat(4_200) }), null],
+  ];
+  for (const [text, expected] of outputs) {
+    const api = createAnthropicJsonJudge({
+      model: "claude-test-model",
+      apiKey: "test-anthropic-key",
+      fetch: async () => streamingResponse([
+        { type: "content_block_start", content_block: { type: "text", text: "" } },
+        ...(text ? [{ type: "content_block_delta", delta: { type: "text_delta", text } }] : []),
+        { type: "message_stop" },
+      ]),
+    });
+    const { judge: cli } = oauthJudge(t, fakeClaude({ stdout: claudeResult(text) }));
+    for (const [path, judge] of [["api", api], ["claude-code", cli]]) {
+      if (expected) assert.deepEqual(await judge.judge({ schemaVersion: 2 }), expected, `${path}: ${text}`);
+      else await assert.rejects(judge.judge({ schemaVersion: 2 }), { message: "Anthropic JSON Judge returned invalid output" }, `${path}: ${text}`);
+    }
+  }
+});
+
+test("Anthropic JSON Judge reports malformed Claude Code output as invalid output", async (t) => {
+  for (const stdout of ["not json", "", "[]", JSON.stringify({ type: "result", subtype: "success", is_error: false }), '{"type":"result"'] ) {
+    const { judge, reasons } = oauthJudge(t, fakeClaude({ stdout }));
+    await assert.rejects(judge.judge({ schemaVersion: 2 }), { message: "Anthropic JSON Judge returned invalid output" }, stdout);
+    assert.deepEqual(reasons, []);
+  }
+});
+
+test("Anthropic JSON Judge gives a short, secret-free reason when Claude Code cannot judge", async (t) => {
+  for (const [label, options, reason] of [
+    ["missing", { behavior: "enoent" }, /^Claude Code \(claude\) is not installed or not on PATH; the Judge needs it for an OAuth token\.$/],
+    ["spawn throws", { behavior: "throw" }, /^Claude Code \(claude\) could not be started for the Judge\.$/],
+    ["exit", { exitCode: 3, stdout: "", stderr: `fatal: something about ${OAUTH_TOKEN}` }, /^Claude Code exited with status 3 while judging\.$/],
+    ["auth in stderr", { exitCode: 1, stderr: "Invalid API key · Please run /login" }, /^Claude Code rejected the Judge's OAuth token\. Create a new one with `claude setup-token`/],
+    ["auth in result", { exitCode: 1, stdout: claudeResult("Failed to authenticate. API Error: 401 OAuth token has expired.", { is_error: true, api_error_status: 401 }) }, /^Claude Code rejected the Judge's OAuth token/],
+    ["auth exit 0", { stdout: claudeResult("Not logged in · Please run /login", { is_error: true }) }, /^Claude Code rejected the Judge's OAuth token/],
+    ["reported error", { stdout: claudeResult("Overloaded", { is_error: true, subtype: "error_during_execution" }) }, /^Claude Code reported an error while judging\.$/],
+    ["oversized", { stdout: "x".repeat(300 * 1024) }, /^Claude Code output exceeded the Judge's response limit\.$/],
+  ]) {
+    const calls = [];
+    const { judge, reasons, temporaryRoot } = oauthJudge(t, fakeClaude({ ...options, calls }));
+    await assert.rejects(judge.judge({ schemaVersion: 2 }), (error) => {
+      assert.equal(error.message, "Anthropic JSON Judge provider failed", label);
+      assert.match(error.reason, reason, label);
+      assert.doesNotMatch(`${error.message} ${error.reason}`, /test-judge-token|something about/, label);
+      return true;
+    });
+    assert.equal(reasons.length, 1, label);
+    assert.match(reasons[0], reason, label);
+    assert.deepEqual(readdirSync(temporaryRoot), [], `${label}: temporary directories must be removed`);
+  }
+});
+
+test("Anthropic JSON Judge stops Claude Code on cancellation and removes its directories", async (t) => {
+  const calls = [];
+  const { judge, reasons, temporaryRoot } = oauthJudge(t, fakeClaude({ behavior: "hang", calls }));
+  const controller = new AbortController();
+  const pending = judge.judge({ schemaVersion: 2 }, { signal: controller.signal });
+  while (calls.length === 0 || calls[0].input === undefined) await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  await assert.rejects(pending, { message: "Anthropic JSON Judge provider failed", reason: "The Judge was cancelled or timed out." });
+  assert.deepEqual(calls[0].child.killed, ["SIGTERM"]);
+  assert.deepEqual(reasons, ["The Judge was cancelled or timed out."]);
+  assert.deepEqual(readdirSync(temporaryRoot), []);
+});
+
+test("Anthropic JSON Judge reports an API authentication failure without the key", async () => {
+  const secret = "sk-ant-api03-secret-judge-key";
+  const reasons = [];
+  const judge = createAnthropicJsonJudge({
+    model: "claude-test-model",
+    apiKey: secret,
+    onFailure: (reason) => reasons.push(reason),
+    fetch: async () => new Response(JSON.stringify({ error: { message: `bad key ${secret}` } }), { status: 401 }),
+  });
+  await assert.rejects(judge.judge({ schemaVersion: 2 }), { message: "Anthropic JSON Judge provider failed", reason: "Anthropic rejected the Judge API key (HTTP 401)." });
+  assert.deepEqual(reasons, ["Anthropic rejected the Judge API key (HTTP 401)."]);
+  assert.throws(() => createAnthropicJsonJudge({ model: "m", apiKey: "k", onFailure: "nope" }), /configuration is invalid/);
+});
+
+test("Anthropic JSON Judge never starts Claude Code once cancelled during setup", async (t) => {
+  let spawned = false;
+  const { judge, reasons, temporaryRoot } = oauthJudge(t, () => { spawned = true; throw new Error("must not spawn"); });
+  const controller = new AbortController();
+  // The Judge is still creating its temporary directories when this runs.
+  const pending = judge.judge({ schemaVersion: 2 }, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, { message: "Anthropic JSON Judge provider failed", reason: "The Judge was cancelled or timed out." });
+  assert.equal(spawned, false);
+  assert.deepEqual(reasons, ["The Judge was cancelled or timed out."]);
+  assert.deepEqual(readdirSync(temporaryRoot), []);
+});
+
+test("Anthropic JSON Judge handles a real spawn failure, even when cancelled at spawn, without signalling itself", async (t) => {
+  const emptyPath = mkdtempSync(join(tmpdir(), "hurdle-judge-no-claude-"));
+  t.after(() => rmSync(emptyPath, { recursive: true, force: true }));
+  const signals = [];
+  const uncaught = [];
+  const onSigterm = () => signals.push("SIGTERM");
+  const onUncaught = (error) => uncaught.push(error);
+  process.on("SIGTERM", onSigterm);
+  process.on("uncaughtException", onUncaught);
+  t.after(() => {
+    process.off("SIGTERM", onSigterm);
+    process.off("uncaughtException", onUncaught);
+  });
+  for (const cancelAtSpawn of [false, true]) {
+    const controller = new AbortController();
+    const children = [];
+    const { judge, reasons, temporaryRoot } = oauthJudge(t, (command, args, options) => {
+      // `claude` cannot be found on this PATH, so the real spawn fails with ENOENT.
+      const child = spawnProcess(command, args, options);
+      children.push(child);
+      if (cancelAtSpawn) controller.abort();
+      return child;
+    }, { env: { PATH: emptyPath } });
+    const reason = cancelAtSpawn
+      ? "The Judge was cancelled or timed out."
+      : "Claude Code (claude) is not installed or not on PATH; the Judge needs it for an OAuth token.";
+    await assert.rejects(judge.judge({ schemaVersion: 2 }, { signal: controller.signal }), { message: "Anthropic JSON Judge provider failed", reason });
+    assert.equal(children.length, 1);
+    assert.equal(children[0].pid, undefined);
+    assert.deepEqual(reasons, [reason]);
+    assert.deepEqual(readdirSync(temporaryRoot), [], "temporary directories must be removed");
+  }
+  // Let the late spawn errors arrive before checking nothing escaped.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(uncaught, []);
+  assert.deepEqual(signals, []);
+});
+
+test("Anthropic JSON Judge ignores stderr when Claude Code returns a valid decision", async (t) => {
+  const { judge, reasons } = oauthJudge(t, fakeClaude({
+    exitCode: 0,
+    stderr: "warning: OAuth token refresh skipped; run /login to re-authenticate",
+    stdout: claudeResult('{"outcome":"pass","summary":"Copied."}'),
+  }));
+  assert.deepEqual(await judge.judge({ schemaVersion: 2 }), { outcome: "pass", summary: "Copied." });
+  assert.deepEqual(reasons, []);
 });

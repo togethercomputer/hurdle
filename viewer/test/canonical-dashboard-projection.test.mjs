@@ -344,6 +344,7 @@ test("canonical dashboard detail reads only the selected digest-verified transcr
 
 test("canonical dashboard projects captured API calls from bounded egress evidence", async () => {
   const record = structuredClone(completeRecord);
+  record.snapshot.target.egress.relevantHosts = ["api.together.ai"];
   const observedAt = "2026-08-21T10:00:03.000Z";
   const egress = Buffer.from(`${JSON.stringify({
     status: "captured",
@@ -445,6 +446,7 @@ test("canonical dashboard projects captured API calls from bounded egress eviden
 test("canonical dashboard bounds rendered API calls and marks truncation", async () => {
   const record = structuredClone(completeRecord);
   record.evidence.transcript = null;
+  record.snapshot.target.egress.relevantHosts = ["api.together.ai"];
   const requests = Array.from({ length: 251 }, (_, sequence) => ({
     kind: "http-request",
     sequence,
@@ -468,6 +470,61 @@ test("canonical dashboard bounds rendered API calls and marks truncation", async
   assert.equal(detail.togetherRequests.length, 250);
   assert.equal(detail.togetherRequests.at(-1).path, "/v1/items/249");
   assert.equal(detail.togetherRequestsTruncated, true);
+});
+
+test("canonical dashboard lists only Task API calls, without the Agent's own traffic", async () => {
+  const request = (sequence, host, path, statusCode) => ({
+    kind: "http-request",
+    sequence,
+    observedAt: "2026-10-27T10:00:03.000Z",
+    method: "GET",
+    scheme: "https",
+    host,
+    path,
+    ...(statusCode === undefined ? {} : { statusCode }),
+    durationMs: 1,
+    selectedFields: {},
+  });
+  const project = async (record, requests) => {
+    record.evidence.transcript = null;
+    const egress = Buffer.from(`${JSON.stringify({ status: "captured", requests })}\n`);
+    record.evidence.egress[0].content.sizeBytes = egress.byteLength;
+    const reader = fixtureReader(record);
+    reader.readEvidence = async () => egress;
+    return createCanonicalDashboardProjection(reader).findSession(`canonical--${record.id}`);
+  };
+
+  // On Together the Guardian also records Claude Code's model, config and telemetry calls.
+  const together = structuredClone(completeRecord);
+  together.snapshot.target.egress.relevantHosts = ["API.together.ai"];
+  const detail = await project(together, [
+    request(0, "api.anthropic.com", "/api/claude_code/settings", 404),
+    request(1, "api.together.ai", "/v1/models", 200),
+    request(2, "api.anthropic.com", "/v1/messages", 200),
+    request(3, "http-intake.logs.us5.datadoghq.com", "/api/v2/logs"),
+    request(4, "api.together.ai", "/v1/chat/completions", 200),
+  ]);
+  assert.deepEqual(detail.togetherRequests.map(row => [row.host, row.path]), [
+    ["api.together.ai", "/v1/models"],
+    ["api.together.ai", "/v1/chat/completions"],
+  ]);
+  assert.equal(detail.togetherRequestsTruncated, false);
+
+  // Heavy Agent traffic cannot push the Task's calls past the row limit.
+  const busy = structuredClone(completeRecord);
+  busy.snapshot.target.egress.relevantHosts = ["api.together.ai"];
+  const bounded = await project(busy, [
+    ...Array.from({ length: 300 }, (_, sequence) => request(sequence, "api.anthropic.com", `/v1/messages/${sequence}`, 200)),
+    request(300, "api.together.ai", "/v1/chat/completions", 200),
+  ]);
+  assert.deepEqual(bounded.togetherRequests.map(row => row.path), ["/v1/chat/completions"]);
+  assert.equal(bounded.togetherRequestsTruncated, false);
+
+  // A record that does not list its API hosts keeps every row as a task call.
+  const older = structuredClone(completeRecord);
+  delete older.snapshot.target.egress;
+  const unlisted = await project(older, [request(0, "api.anthropic.com", "/v1/messages", 200)]);
+  assert.deepEqual(unlisted.togetherRequests.map(row => row.host), ["api.anthropic.com"]);
 });
 
 test("canonical dashboard explains Run Trust failures before downstream check symptoms", async () => {

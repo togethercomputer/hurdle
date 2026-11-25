@@ -30,8 +30,8 @@ function fixture(t, { config, legacy = false, env = { [credentialName]: secret }
       checkConnection: async value => { calls.push(["connection", value]); },
       migrate: async value => { calls.push(["migrate", value]); },
     }),
-    checkAgentReadiness() { assert.fail("Storage setup must not require Agent or E2B readiness"); },
-    loadSetupBackend() { assert.fail("Storage setup must not use E2B"); },
+    checkAgentReadiness() { assert.fail("Storage setup must not require Agent or sandbox readiness"); },
+    ensureHostGuardianRuntime() { assert.fail("Storage setup must not install the Guardian"); },
     createAgentAdapter() { assert.fail("Storage setup must not run an Agent"); },
   };
   return { root, path, io, dependencies, calls, output: () => stripVTControlCharacters(output), runtime: () => JSON.parse(readFileSync(path, "utf8")) };
@@ -57,10 +57,10 @@ test("Postgres setup needs no Suite or Agent credentials and becomes the discove
   assert.doesNotMatch(f.output(), /private-password|example\.test|\x1b\[/);
 });
 
-test("storage setup preserves E2B, custom settings, and legacy paths without moving local results", async t => {
+test("storage setup preserves the Together sandbox, custom settings, and legacy paths without moving local results", async t => {
   const config = {
     schemaVersion: 1,
-    environment: { kind: "e2b", apiKeyEnv: "MY_E2B_KEY", settings: { workloadTemplate: "custom:v1", maxLifetimeMs: 120_000, cpuCount: 1, memoryMiB: 1024 } },
+    environment: { kind: "together", apiKeyEnv: "MY_TOGETHER_KEY", settings: { maxLifetimeMs: 120_000 } },
     resultStore: { kind: "local", root: "../old-results" },
     judge: { kind: "anthropic-json-v1", model: "custom-model", credentialEnv: "MY_JUDGE_KEY" },
     viewer: { port: 3050 },
@@ -81,7 +81,7 @@ test("storage setup preserves E2B, custom settings, and legacy paths without mov
 });
 
 test("Postgres setup preserves Together and guides a selected Suite or lists ambiguous choices", async t => {
-  const config = { schemaVersion: 1, environment: { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: { snapshotAlias: "synthetic@v1" } }, resultStore: { kind: "local", root: "../results" } };
+  const config = { schemaVersion: 1, environment: { kind: "together", apiKeyEnv: "TOGETHER_API_KEY", settings: {} }, resultStore: { kind: "local", root: "../results" } };
   for (const json of [false, true]) for (const selected of [true, false]) {
     const f = fixture(t, { config });
     for (const name of ["selected", "another"]) {
@@ -339,7 +339,7 @@ test("storage help and invalid combinations do not connect or configure a sandbo
   const f = fixture(t); const cli = createFrameworkCli(f.dependencies);
   assert.equal(await cli.main(["help", "setup"], f.io), 0);
   assert.match(f.output(), /--store postgres/);
-  for (const args of [["--store"], ["--store", "local"], ["--store", "postgres", "--store", "postgres"], ["--store", "postgres", "--sandbox", "e2b"], ["--store", "postgres", "--template", "custom:v1"]]) {
+  for (const args of [["--store"], ["--store", "local"], ["--store", "postgres", "--store", "postgres"], ["--store", "postgres", "--sandbox", "together"], ["--store", "postgres", "--template", "custom:v1"]]) {
     assert.equal(await cli.main(["setup", ...args], f.io), 2, f.output());
   }
   assert.deepEqual(f.calls, []);

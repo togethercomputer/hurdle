@@ -13,7 +13,7 @@ try {
   const useColor = terminalUsesColor(process.stdout);
   process.stdout.write(terminalHeader(process.stdout)
     + terminalFact("Source", source, { useColor })
-    + terminalFact("Usage", "Anthropic and Together may be billed · E2B and Postgres are read-only", { useColor }) + "\n");
+    + terminalFact("Usage", "Anthropic and Together may be billed · Postgres is read-only", { useColor }) + "\n");
 
   const results = await runCredentialPreflight(environment);
   for (const value of results) writeResult(value);
